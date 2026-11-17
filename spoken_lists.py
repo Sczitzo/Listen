@@ -57,6 +57,54 @@ _REFERENCED_LABEL = re.compile(
     r'\b(?:word|term|phrase|label|called|named|says?|reads?|marked|printed|means?|mentions?|mentioned)\s*[:,]?\s*$', re.I)
 _INTRO = re.compile(r"(?:it['’]s\s+going\s+to\s+be|it\s+is\s+going\s+to\s+be|"
                     r'the\s+items\s+are|they\s+are|here\s+are\s+the\s+items)\b', re.I)
+_COUNTED_INTRO = re.compile(
+    r'\b(?:(?:I|we)\s+have|(?:there|here)\s+are|(?:my|our|the)\s+(?:plan|list)\s+(?:has|includes)'
+    r'|(?:make|create|write)\s+(?:me\s+)?a\s+list\s+(?:with|of))\s+'
+    r'(?P<count>[0-9]{1,2}|' + '|'.join(_COUNT_WORDS) + r')\s+'
+    r'(?P<unit>tasks|steps|items|points|options)\s*[.:]\s*', re.I)
+_COUNTED_ORDINAL = re.compile(r'\b(?P<ordinal>' + '|'.join(_ORDINAL_WORDS) + r')(?P<comma>,?)\s+', re.I)
+_TASK_VERBS = frozenset(('add ask attach back bring buy call check choose clean click close compare '
+    'complete cook copy create delete do don\'t download email ensure finish fix get install keep make '
+    'move open pay prepare put read remove rename reply review run save send set share sign start '
+    'stop submit take test turn type update upload use verify wait wash write').split())
+_UNSAFE_PREFIX = re.compile(
+    r"\b(?:not|never|no|without|don't|doesn't|cannot|can't|explain|example|quoted|quote|"
+    r"said|says?|reads?|mentioned|mentions?|wrote|written|whether|how|if|why|word|phrase|label|called|named)\b", re.I)
+
+
+def _unsafe_list_prefix(text):
+    # Normalize only for refusal matching; every plan range uses untouched speech.
+    return bool(_UNSAFE_PREFIX.search(text.replace('’', "'").replace('‘', "'")))
+
+
+def _counted_ordinal_list(text):
+    introductions = list(_COUNTED_INTRO.finditer(text))
+    if len(introductions) != 1 or technical_literals(text) or _OPERATORS.search(text):
+        return None
+    introduction = introductions[0]
+    start = introduction.end()
+    if _unsafe_list_prefix(text[:start]):
+        return None
+    if re.search(r'\bscratch\s+that\b', text, re.I):
+        return None
+    token = introduction.group('count').lower()
+    count = int(token) if token.isdigit() else _COUNT_WORDS[token]
+    if not 2 <= count <= 20:
+        return None
+    labels = list(_COUNTED_ORDINAL.finditer(text, start))
+    if len(labels) != count or labels[0].start() != start:
+        return None
+    for label in labels:
+        if label.start() != start and not re.search(r'(?:[.!?]\s*|\n[ \t]*)$', text[start:label.start()]):
+            return None
+        if not label.group('comma'):
+            first = re.match(r"[A-Za-z]+(?:['’][A-Za-z]+)?", text[label.end():])
+            # Without a pause/comma, require task wording rather than First Aid,
+            # Second Street or another literal ordinal compound.
+            if (introduction.group('unit').lower() not in ('tasks', 'steps') or first is None
+                    or not first.group()[0].islower() or first.group().lower().replace('’', "'") not in _TASK_VERBS):
+                return None
+    return _labeled_list(text, start, count, bulleted=False, labels=labels)
 
 
 def _list_sentence(text):
@@ -121,15 +169,15 @@ def _ordinal_items(body, count):
     return items
 
 
-def _labeled_list(text, start, count, *, bulleted):
-    labels = list(_ITEM_LABEL.finditer(text, start))
+def _labeled_list(text, start, count, *, bulleted, labels=None):
+    labels = list(_ITEM_LABEL.finditer(text, start)) if labels is None else labels
     if not labels or labels[0].start() != start or len(labels) > 20:
         return None
     if count is not None and len(labels) != count:
         return None
     groups, removed, suffix = [], [], ()
     for index, label in enumerate(labels):
-        ordinal, number = label.group('ordinal', 'number')
+        ordinal, number = label.group('ordinal'), label.groupdict().get('number')
         position = (_ORDINAL_WORDS.index(ordinal.lower()) + 1 if ordinal else
                     int(number) if number.isdigit() else _COUNT_WORDS[number.lower()])
         if position != index + 1:
@@ -200,14 +248,15 @@ def parse_spoken_list(text, *, allow_corrections=False):
         return None
     if re.search(r'(?m)^\s*(?:[-*+]\s+|(?:\d+|[A-Za-z])[.)]\s+)', text):
         return None
+    if allow_corrections:
+        counted = _counted_ordinal_list(text)
+        if counted is not None:
+            return counted
     requests = list(_REQUEST.finditer(text))
     implicit = not requests and _SERIES.match(text)
     if len(requests) != 1 and not implicit:
         return None
     request = implicit or requests[0]
-    if re.search(r"\b(?:do\s+not|don't|never|no)\b[^.!?\n]{0,100}\b(?:lists?|bullets?|format)\b", text[:request.start()], re.I):
-        return None
-    start = max(text.rfind(c, 0, request.start()) for c in '.!?\n') + 1
     kind = '' if implicit else request.group('kind').lower()
     numbered = kind.startswith('number')
     lettered = kind.startswith('letter')
@@ -256,7 +305,7 @@ def parse_spoken_list(text, *, allow_corrections=False):
             return None
     if re.match(r'(?:or|and|between|about|approximately|roughly|at\s+least|at\s+most|maybe)\b', text[body_start:], re.I):
         return None
-    if re.search(r"\b(?:not|never|no|without|don't|doesn't|cannot|can't|explain|example|quoted|quote|said|say|mention|whether|how|if|why)\b", text[start:body_start], re.I):
+    if _unsafe_list_prefix(text[:body_start]):
         return None
     commands = list(re.finditer(r'\b(?:actually\s+)?scratch\s+that\b', text, re.I))
     if not implicit and not lettered and _ITEM_LABEL.match(text, body_start):

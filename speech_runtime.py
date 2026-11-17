@@ -7,6 +7,70 @@ from pathlib import Path
 import re
 import threading
 from types import MappingProxyType
+import os
+
+
+DEFAULT_SPEECH_MODEL = 'parakeet-unified-en-0.6b'
+_WHISPER_REPOSITORIES = {
+    'tiny.en': 'Systran/faster-whisper-tiny.en', 'tiny': 'Systran/faster-whisper-tiny',
+    'base.en': 'Systran/faster-whisper-base.en', 'base': 'Systran/faster-whisper-base',
+    'small.en': 'Systran/faster-whisper-small.en', 'small': 'Systran/faster-whisper-small',
+    'medium.en': 'Systran/faster-whisper-medium.en', 'medium': 'Systran/faster-whisper-medium',
+    'large-v1': 'Systran/faster-whisper-large-v1', 'large-v2': 'Systran/faster-whisper-large-v2',
+    'large-v3': 'Systran/faster-whisper-large-v3',
+    'distil-large-v2': 'Systran/faster-distil-whisper-large-v2',
+    'distil-medium.en': 'Systran/faster-distil-whisper-medium.en',
+    'distil-small.en': 'Systran/faster-distil-whisper-small.en',
+    'distil-large-v3': 'Systran/faster-distil-whisper-large-v3',
+    'distil-large-v3.5': 'distil-whisper/distil-large-v3.5-ct2',
+    'large-v3-turbo': 'mobiuslabsgmbh/faster-whisper-large-v3-turbo',
+}
+SPEECH_MODEL_IDS = frozenset((DEFAULT_SPEECH_MODEL, *_WHISPER_REPOSITORIES))
+
+
+def speech_model_label(name):
+    if name == DEFAULT_SPEECH_MODEL:
+        return 'Parakeet Unified English 0.6B (CPU; Q8_0)'
+    return 'Whisper ' + name.replace('.en', ' (English)').replace('-', ' ').title().replace(' V', ' v')
+
+
+def speech_model_note(name):
+    if name == DEFAULT_SPEECH_MODEL:
+        return 'English only. Vocabulary is kept for text cleanup; this speech model does not use vocabulary hints.'
+    return 'Runs locally with GPU preferred and same-model CPU recovery. Vocabulary hints are supported.'
+
+
+def cached_speech_models():
+    """Metadata-only installed choices; constructors still validate before loading."""
+    home = Path.home()
+    cache = Path(os.environ.get('HF_HUB_CACHE') or
+                 Path(os.environ.get('HF_HOME') or Path(os.environ.get('XDG_CACHE_HOME') or home / '.cache') / 'huggingface') / 'hub')
+    choices = {}
+    from parakeet_runtime import REVISION
+    parakeet = home / '.cache/huggingface/hub/models--handy-computer--parakeet-unified-en-0.6b-gguf/snapshots' / REVISION / 'parakeet-unified-en-0.6b-Q8_0.gguf'
+    runtime = home / 'AppData/Local/Listen/runtimes/transcribe-0.4.2-cpu-vulkan/transcribe.dll'
+    try:
+        if parakeet.is_file() and parakeet.stat().st_size and runtime.is_file() and runtime.stat().st_size:
+            choices[speech_model_label(DEFAULT_SPEECH_MODEL)] = DEFAULT_SPEECH_MODEL
+    except OSError:
+        pass
+    for name, repository in _WHISPER_REPOSITORIES.items():
+        folder = cache / ('models--' + repository.replace('/', '--'))
+        try:
+            with (folder / 'refs/main').open(encoding='utf-8') as reference:
+                revision = reference.read(129)
+            if len(revision) > 128:
+                continue
+            revision = revision.strip()
+            if not re.fullmatch(r'[0-9a-fA-F]{40,64}', revision):
+                continue
+            snapshot = folder / 'snapshots' / revision
+            if all((snapshot / asset).is_file() and (snapshot / asset).stat().st_size
+                   for asset in ('model.bin', 'config.json', 'tokenizer.json')):
+                choices[speech_model_label(name)] = name
+        except (OSError, UnicodeError):
+            continue
+    return choices
 
 
 class SpeechUnavailableError(RuntimeError):

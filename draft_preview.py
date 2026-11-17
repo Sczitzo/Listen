@@ -5,7 +5,7 @@ import threading
 import time
 
 import cleanup_http
-from spoken_format import formatting_is_safe as cleanup_is_safe, layout_explicit_lists, prepare_spoken_list
+from spoken_format import formatting_is_safe as cleanup_is_safe, prepare_spoken_list, list_layout_is_safe
 
 Cancellation = cleanup_http.Cancellation
 
@@ -288,9 +288,10 @@ class DraftCoordinator:
         return not self.alive
 
     def _emit(self, token, job, text, state, reason=''):
-        if state in ('ready', 'partial') and text:
+        if state == 'partial' and text:
             prepared = prepare_spoken_list(job.text, job.vocab)
-            text = prepared.formatted if prepared else layout_explicit_lists(text, job.vocab)
+            if prepared:
+                text = prepared.formatted
         # Cancellation and publication share this boundary, including callbacks.
         with token._publication_lock:
             if token.cancelled:
@@ -349,11 +350,13 @@ class DraftCoordinator:
                     continue
                 self._emit(token, job, '', 'working')
                 token.check()
+                prepared = prepare_spoken_list(raw, job.vocab)
+                source = prepared.source if prepared else raw
                 payload = {'model': job.model, 'stream': True, 'keep_alive': '5m',
                            'options': {'num_ctx': 8192, 'num_predict': 4000, 'temperature': 0,
                                        'num_batch': cleanup_http.NUM_BATCH},
                            'messages': [{'role': 'system', 'content': job.system},
-                                        {'role': 'user', 'content': raw}]}
+                                        {'role': 'user', 'content': prepared.formatted if prepared else source}]}
                 if job.model.startswith('qwen3'):
                     payload['think'] = False
                 reason, text = '', None
@@ -365,7 +368,8 @@ class DraftCoordinator:
                     if data.get('done') is not True or data.get('done_reason') != 'stop':
                         raise cleanup_http.CleanupHTTPError('incomplete_output')
                     candidate = _clean(data['message']['content'])
-                    if cleanup_is_safe(raw, candidate, job.vocab):
+                    if (cleanup_is_safe(source, candidate, job.vocab)
+                            and (prepared is None or list_layout_is_safe(prepared, candidate, job.vocab))):
                         # Preserve source separators when a bounded fragment is cleaned.
                         leading = raw[:len(raw) - len(raw.lstrip())]
                         trailing = raw[len(raw.rstrip()):]

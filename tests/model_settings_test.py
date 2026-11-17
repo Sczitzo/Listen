@@ -3,7 +3,9 @@ import ast
 from pathlib import Path
 import shutil
 import subprocess
+import threading
 from types import SimpleNamespace
+from speech_runtime import speech_model_label, speech_model_note
 
 ROOT = Path(__file__).resolve().parents[1]
 tree = ast.parse((ROOT / 'dictate.py').read_text(encoding='utf-8-sig'))
@@ -15,6 +17,8 @@ def get(*args, **kwargs):
     return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: inventory)
 scope = dict(SETTINGS={'local_model': 'qwen2.5:7b'}, OLLAMA_MODEL='qwen2.5:7b',
              MODEL_SIZE='small', requests=SimpleNamespace(get=get), _NO_PROXY={},
+             _data_lock=threading.RLock(), cached_speech_models=lambda: {'Whisper Small': 'small'},
+             speech_model_label=speech_model_label, speech_model_note=speech_model_note,
              **{k: {} for k in ('HOTKEY_NAMES', 'STYLE_NAMES', 'TARGET_NAMES', 'JUDGE_NAMES', 'JUDGE_MODEL_NAMES', 'ENGINE_NAMES')})
 for method in methods:
     exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-model-settings', 'exec'), scope)

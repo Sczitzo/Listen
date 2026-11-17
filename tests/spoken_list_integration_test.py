@@ -3,6 +3,7 @@ from pathlib import Path
 import queue
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,12 +49,154 @@ try:
         for online in (False, True):
             reset()
             d._llm_ok = online
-            with patch.object(d.cleanup_http, 'post_json') as request:
+            with patch.object(d.cleanup_http, 'post_json', return_value={
+                    'done_reason': 'stop', 'message': {'content': LAYOUT}}) as request:
                 assert d.refine(RAW) == LAYOUT
-            request.assert_not_called()
+            assert request.call_count == int(online), 'Ready cleanup must construct the list'
             assert d._llm_ok is online
-            assert d._last_cleanup_timing == {'outcome': 'local_list', 'request_ms': 0.0}
-        print('PASS actual refine formats validated lists without probing or changing AI availability')
+            assert d._last_cleanup_timing['outcome'] == ('response' if online else 'local_list')
+        print('PASS ready AI constructs lists; offline list fallback stays immediate')
+
+        reset()
+        d._llm_ok = True
+        labeled = 'Create a list for groceries. First item is apples. Number two is oranges.'
+        ai_list = 'Create a list for groceries:\n1. Apples.\n2. Oranges.'
+        prepared = d.prepare_spoken_list(labeled)
+        assert prepared is not None and ai_list != prepared.formatted
+        with patch.object(d.cleanup_http, 'post_json', return_value={
+                'done_reason': 'stop', 'message': {'content': ai_list}}) as request:
+            assert d.refine(labeled) == ai_list, 'Validated AI structure was replaced'
+        assert request.call_args.args[0]['messages'][-1]['content'] == prepared.formatted
+        assert 0 < request.call_args.kwargs['timeout'] <= 15
+        with patch.object(d.cleanup_http, 'post_json', return_value={
+                'done_reason': 'stop', 'message': {'content': ai_list.replace('Oranges', 'Pears')}}):
+            assert d.refine(labeled) == prepared.formatted
+        print('PASS original speech owns correction authority and accepted AI list layout survives')
+
+        reset()
+        d._llm_ok = True
+        enumerated = 'Today I have three tasks. First email Alex the 17 files. Second do not delete the backup. Third review the report.'
+        numbered = 'Today I have three tasks:\n\n1. Email Alex the 17 files.\n2. Do not delete the backup.\n3. Review the report.'
+        with patch.object(d.cleanup_http, 'post_json', return_value={
+                'done_reason': 'stop', 'message': {'content': numbered}}) as request:
+            assert d.refine(enumerated) == numbered
+        assert request.call_args.args[0]['messages'][-1]['content'] == d.prepare_spoken_list(enumerated).formatted
+        assert '17' in numbered and 'not delete' in numbered
+        print('PASS clear original counted ordinals authorize AI numbering without redundant First/Second text')
+
+        merged = ('Today I have three tasks:\n\n'
+                  '- Email Alex the 17 files. Do not delete the backup.\n'
+                  '- Review the report.')
+        prepared_tasks = d.prepare_spoken_list(enumerated)
+        assert formatting_is_safe(prepared_tasks.source, merged), 'This regression must pass the word-only guard'
+        with patch.object(d.cleanup_http, 'post_json', return_value={
+                'done_reason': 'stop', 'message': {'content': merged}}):
+            assert d.refine(enumerated) == prepared_tasks.formatted, 'Merged AI items must use the original three-item layout'
+
+        for candidate in (merged, numbered):
+            events, requests = [], []
+            def boundary_stream(payload, **kwargs):
+                requests.append(payload)
+                return {'done': True, 'done_reason': 'stop', 'message': {'content': candidate}}
+            assert d._draft.close()
+            d._draft = d.DraftCoordinator(lambda *args: events.append(args), lambda job: True,
+                                          request=boundary_stream, interval=0)
+            job = d.DraftJob(42, (0, 0), 1, 'item-boundaries', 'Synthetic cleanup.', enumerated,
+                             d.SETTINGS.get('local_model', d.OLLAMA_MODEL))
+            assert d._draft.offer(job)
+            wait(lambda: not d._draft.busy)
+            good = candidate == numbered
+            assert events[-1][1:] == ((numbered, 'ready', '') if good else
+                                       (prepared_tasks.formatted, 'partial', 'unsafe'))
+            assert d._draft.cached_whole(42, (0, 0), 'item-boundaries', enumerated) == (numbered if good else None)
+            assert requests[0]['messages'][-1]['content'] == prepared_tasks.formatted
+            assert d._draft.close()
+
+        d._lab_thread.preview_generation = 42
+        d._lab_thread.timings = {}
+        delivered = []
+        with patch.object(d, 'transcribe', return_value=enumerated), \
+             patch.object(d._draft, 'cached_whole', return_value=merged), \
+             patch.object(d, '_chat', return_value=merged) as chat, \
+             patch.object(d, 'paste', side_effect=lambda text, target: delivered.append(text) or {'status': 'retained'}), \
+             patch.object(d, '_append_history'):
+            d.process([], 1, time.perf_counter(), generations=(0, 0))
+        assert chat.call_count == 1 and not d._lab_thread.timings.get('cleanup_cache_hit')
+        assert delivered == [prepared_tasks.formatted + ' ']
+        print('PASS merged AI items rejected by cleanup, preview and final-cache reuse; safe three-item fallback retained')
+
+        reset()
+        source_snapshot = {'active': True, 'text': enumerated, 'covered_samples': 2 * d.SAMPLE_RATE,
+                           'generation': 42, 'context': (0, 0), 'text_revision': 1}
+        fake_preview = SimpleNamespace(draft_source=lambda: (source_snapshot, ()), set_draft_settings=Mock())
+        d._draft_key = ''
+        with patch.object(d, '_preview', fake_preview), \
+             patch.object(d, '_draft', SimpleNamespace(retire=Mock())), \
+             patch.object(d, '_restore_draft_after_quit', return_value=None):
+            current_job = d._draft_input()
+            with patch.object(d, 'FORMAT_REVISION', 'old-interpretation'):
+                old_job = d._draft_input()
+        assert current_job.key != old_job.key and current_job.text == old_job.text == enumerated
+        d._lab_thread.preview_generation = 42
+        d._lab_thread.timings = {}
+        with patch.object(d, 'transcribe', return_value=enumerated), \
+             patch.object(d._draft, 'cached_whole', return_value=numbered) as cache, \
+             patch.object(d, '_chat', side_effect=AssertionError('Validated cache must be reused')), \
+             patch.object(d, 'paste', return_value={'status': 'retained'}), \
+             patch.object(d, '_append_history'):
+            d.process([], 1, time.perf_counter(), generations=(0, 0))
+        assert cache.call_args.args[2] == current_job.key
+        assert d._lab_thread.timings['cleanup_cache_hit']
+        d._draft_key = ''
+        print('PASS interpretation revision fences both draft and final cache identities')
+
+        reset()
+        d._llm_ok = True
+        for source, structured in (
+            ('Today email Alex the 17 files then do not delete the backup',
+             'Today:\n- Email Alex the 17 files\n- then do not delete the backup'),
+            ('Project status the draft is ready next steps ask Alex to review it tomorrow',
+             '# Project status\nThe draft is ready.\n\n# Next steps\nAsk Alex to review it tomorrow.'),
+            ('Item Quantity apples 3 oranges 2',
+             '| Item | Quantity |\n| --- | --- |\n| apples | 3 |\n| oranges | 2 |'),
+        ):
+            with patch.object(d.cleanup_http, 'post_json', return_value={
+                    'done_reason': 'stop', 'message': {'content': structured}}):
+                assert d.refine(source) == structured
+        print('PASS actual cleanup retains safe task lists, sections and tables without adding facts')
+
+        reset()
+        d._llm_ok = True
+        events, requests = [], []
+        def structured_stream(payload, **kwargs):
+            requests.append(payload)
+            return {'done': True, 'done_reason': 'stop', 'message': {'content': ai_list}}
+        assert d._draft.close()
+        d._draft = d.DraftCoordinator(lambda *a: events.append(a), lambda j: True,
+                                      request=structured_stream, interval=0)
+        job = d.DraftJob(42, (0, 0), 1, 'ai-structure', 'Synthetic list cleanup.', labeled,
+                         d.SETTINGS.get('local_model', d.OLLAMA_MODEL))
+        with patch.object(d, '_draft_input', return_value=job), \
+             patch.object(d, '_valid_draft', return_value=True), \
+             patch.object(d._preview, 'snapshot', return_value={'draft_source_revision': 1, 'draft_reason': 'local list'}):
+            d._offer_draft()
+            wait(lambda: not d._draft.busy)
+        assert len(requests) == 1 and requests[0]['messages'][-1]['content'] == prepared.formatted
+        assert events[-1][1:] == (ai_list, 'ready', '')
+        assert d._draft.cached_whole(42, (0, 0), 'ai-structure', labeled) == ai_list
+        d._lab_thread.preview_generation = 42
+        d._lab_thread.timings = {}
+        delivered, history = [], []
+        with patch.object(d, 'transcribe', return_value=labeled), \
+             patch.object(d._draft, 'cached_whole', return_value=ai_list), \
+             patch.object(d, '_chat', side_effect=AssertionError('Safe whole AI result was cleaned twice')), \
+             patch.object(d, 'paste', side_effect=lambda text, target: delivered.append(text) or {'status': 'retained'}), \
+             patch.object(d, '_append_history', side_effect=history.append):
+            d.process([], 1, time.perf_counter(), generations=(0, 0))
+        assert delivered == [ai_list + ' ']
+        assert history[-1]['raw'] == labeled and history[-1]['text'] == ai_list
+        assert d._lab_thread.timings['cleanup_cache_hit']
+        print('PASS ready AI preview, whole-cache reuse, single delivery and exact original history')
 
         reset()
         d.SETTINGS['cleanup'] = False
@@ -89,7 +232,7 @@ try:
             def stream(payload, *, timeout, cancel):
                 requests.append(payload)
                 return {'done': True, 'done_reason': 'stop',
-                        'message': {'content': RAW if valid else UNSAFE}}
+                        'message': {'content': LAYOUT if valid else UNSAFE}}
             d._draft = d.DraftCoordinator(lambda *a: events.append(a), lambda j: True,
                                           request=stream, interval=0)
             job = d.DraftJob(7, (0, 0), 1, 'synthetic-key', 'Synthetic list cleanup.', RAW,
@@ -102,7 +245,7 @@ try:
             metadata = d._draft.metadata()
             assert metadata['attempts'] == 1 and metadata['success'] == int(valid)
             cached = d._draft.cached_whole(7, (0, 0), 'synthetic-key', RAW)
-            assert cached == (RAW if valid else None)
+            assert cached == (LAYOUT if valid else None)
             assert d._draft.close(timeout=2)
         print('PASS coordinator emits structured unsafe partial/valid ready while preserving whole-cache provenance')
 

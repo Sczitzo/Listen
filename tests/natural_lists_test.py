@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import spoken_format
 from spoken_format import (format_spoken_lists, formatting_is_safe,
-                           layout_explicit_lists, prepare_spoken_list)
+                           layout_explicit_lists, prepare_spoken_list, list_layout_is_safe)
 from spoken_corrections import correction_source
 from spoken_lists import ListPlan, Span, parse_spoken_list
 
@@ -188,5 +188,69 @@ for raw in refusals:
     assert correction_source(raw) == raw, raw
 for raw in (None, 12, [], '', 'a' * 2_000_001):
     assert parse_spoken_list(raw) is None
+
+counted = 'Today I have three tasks. First email Alex the 17 files. Second do not delete the backup. Third review the report.'
+counted_source = 'Today I have three tasks. email Alex the 17 files. do not delete the backup. review the report.'
+numbered = 'Today I have three tasks:\n\n1. Email Alex the 17 files.\n2. Do not delete the backup.\n3. Review the report.'
+prepared = prepare_spoken_list(counted)
+assert prepared is not None and prepared.source == counted_source
+assert len(prepared.plan.items) == 3 and prepared.plan.markers == ('1.', '2.', '3.')
+assert [span.role for span in prepared.plan.partition if not span.keep] == ['spoken marker'] * 3
+assert ''.join(counted[s.start:s.end] for s in prepared.plan.partition) == counted
+assert formatting_is_safe(prepared.source, numbered)
+assert list_layout_is_safe(prepared, numbered)
+assert list_layout_is_safe(prepared, prepared.formatted)
+assert list_layout_is_safe(prepared, numbered.replace('1. Email Alex the 17 files.',
+                                                      '1. Email Alex\n   the 17 files.'))
+for candidate in (
+    'Today I have three tasks:\n- Email Alex the 17 files. Do not delete the backup.\n- Review the report.',
+    'Today I have three tasks:\n1. Email Alex\n2. the 17 files. Do not delete the backup.\n3. Review the report.',
+    'Today I have three tasks. Email Alex the 17 files. Do not delete the backup. Review the report.',
+):
+    assert formatting_is_safe(prepared.source, candidate), 'Boundary test must pass the existing word guard'
+    assert not list_layout_is_safe(prepared, candidate), ('Changed original item boundaries', candidate)
+assert not formatting_is_safe(counted, numbered), 'The generic guard must not consume ordinal content'
+assert layout_explicit_lists(counted) == counted, 'Model punctuation cannot create original-speech authority'
+for raw in (
+    'There are two steps: First, open the report. Second, review it.',
+    'Create a list with three items: First, apples. Second, oranges. Third, milk.',
+    'Our plan has two steps. First wash the vegetables. Second cook them.',
+):
+    value = prepare_spoken_list(raw)
+    assert value is not None and len(value.plan.items) in (2, 3), raw
+    assert formatting_is_safe(value.source, value.formatted)
+for raw in (
+    '"' + counted + '"',
+    counted.replace('First email', 'First `email`'),
+    counted.replace('I have three', 'I do not have three'),
+    'Do not format a list. ' + counted,
+    'The phrase is ' + counted,
+    'If ' + counted,
+    counted.replace('email Alex the 17 files', r'open C:\work\app.py'),
+    'I have three items. First aid kits. Second hand chairs. Third party software.',
+    'I have three tasks. First National Bank approval. Second Street inspection. Third Avenue plans.',
+    counted.replace('three tasks', 'four tasks'),
+    counted.replace('three tasks', 'about three tasks'),
+    counted.replace('three tasks', 'twenty three tasks'),
+    counted.replace('Second do', 'Third do'),
+    counted.replace('Third review', 'Second review'),
+    counted.replace('. First email', ' First email'),
+):
+    assert prepare_spoken_list(raw) is None, ('Unclear/literal counted ordinal list', raw)
+
+for prefix in ("Don't format this. ", 'Don’t format this. ', 'Don‘t format this. ',
+               "This doesn't need formatting. ", 'This doesn’t need formatting. ', 'This doesn‘t need formatting. ',
+               "I can't have a list. ", 'I can’t have a list. ', 'I can‘t have a list. ',
+               'The text reads: ', 'The text says: ', 'He mentioned: ', 'She wrote: '):
+    for body in (counted,
+                 'I need a shopping list with three items. First item is apples. Number two is oranges. Number three is milk.',
+                 'I need a shopping list with three items. Apples, oranges, milk.'):
+        raw = prefix + body
+        assert prepare_spoken_list(raw) is None, ('Reported text or formatting refusal granted list authority', raw)
+        assert format_spoken_lists(raw) == raw and correction_source(raw) == raw, raw
+        assert layout_explicit_lists(raw) == raw, raw
+for apostrophe in ("'", '’', '‘'):
+    raw = 'Don' + apostrophe + 't format this. Make a shopping list with three items. Apples, milk, eggs.'
+    assert prepare_spoken_list(raw) is None, raw
 
 print(f'Natural lists: {cases} introductory/correction variants, partition, retained lexical proof, immutable results, single parse, 21-item compatibility and {len(refusals)} refusals passed')

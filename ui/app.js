@@ -13,7 +13,11 @@ const mock = {
     by: "claude-opus-5", stale: false, prev_score: 6, fav: null, busy: "", error: "", session_cost: 0.066,
     score: { score: 8, criteria: { clarity: 5, context: 4, task: 5, constraints: 4, success_criteria: 3, format: 5 }, gaps: ["No verification command.", "Persistence API unnamed while new packages are forbidden.", "Theming setup unknown."], improved: "Goal: …improved…", by: "claude-opus-5", cost: 0.033, note: "" } },
   get_state: async () => ({ ...mock._s, recording_ready: mock._s.state === "recording", lab_busy: mock._lab.busy, levels: mock._s.state === "recording" ? Array.from({ length: 20 }, () => Math.random() * 0.1) : [] }),
-  get_options: async () => ({...OPTS, speech_model: "small"}),
+  get_options: async () => {
+    const models={"Parakeet Unified English 0.6B (default)":"parakeet-unified-en-0.6b","Whisper Small":"small","Whisper Medium":"medium","Whisper Large v3":"large-v3","Whisper Large v3 Turbo":"large-v3-turbo"};
+    const selected=mock._settings?.speech_model||"parakeet-unified-en-0.6b";
+    return {...OPTS,speech_models:models,speech_model:selected,speech_model_label:Object.entries(models).find(([,value])=>value===selected)?.[0]||selected,speech_model_note:"Simulated model choices. No installed cache is checked in this demo."};
+  },
   get_history: async () => [{ ts: "2026-09-12T10:12:00", kind: "dictate", text: "Add a dark mode toggle to the settings page and remember the choice between launches.", raw: "um add a dark mode toggle", secs: 6.2, latency: 0.9, cost: 0 }, { ts: "2026-09-11T18:02:00", kind: "dictate", text: "Ship it before Friday and let QA know.", raw: "ship it uh before friday", secs: 3.1, latency: 0.7, cost: 0 }],
   get_stats: async () => ({ today: 7, week: 41, words_week: 3120, minutes_week: 22.4, wpm: 139, latency: 0.8, spend_month: 0.42 }),
   get_lab: async () => mock._lab,
@@ -174,7 +178,7 @@ function chip(key, label, icon) {
 function renderChips() {
   const a = document.activeElement, box = a?.closest?.(".chips")?.id;
   const sel = a?.dataset?.key ? `[data-key="${a.dataset.key}"]` : a?.dataset?.toggle ? `[data-toggle="${a.dataset.toggle}"]` : "";
-  stableHTML($("#chips-dictate"), chip("hotkey", "Hold", "i-mic") + chip("style", "Style", "i-sparkle") +
+  stableHTML($("#chips-dictate"), chip("style", "Style", "i-sparkle") +
     `<button class="chip toggle ${settings.cleanup ? "" : "off"}" data-toggle="cleanup"><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg>AI clean-up ${settings.cleanup ? "on" : "off"}</button>`);
   const cloudSelected = settings.engine === "anthropic" || settings.judge === "anthropic";
   const cloudActive = cloudSelected && settings.cloud_enabled;
@@ -184,7 +188,9 @@ function renderChips() {
   $$(".chip select").forEach(s => s.onchange = () => setSetting(s.dataset.key, s.value));
   $$(".chip[data-toggle]").forEach(b => b.onclick = () => setSetting(b.dataset.toggle, !settings[b.dataset.toggle]));
   const name = k => Object.entries(options[k] || {}).find(([, v]) => v === settings[k])?.[0] || settings[k];
-  $("#hero-key").textContent = name("hotkey");
+  const hotkeyName = String(name("hotkey") || "Right Ctrl");
+  $("#hero-key").textContent = hotkeyName.replace(/^Right /, "");
+  $("#hero-key-side").textContent = hotkeyName.startsWith("Right ") ? "right key" : "hold to speak";
   $("#composer-key").textContent = name("hotkey");
   $("#lab-model-label").textContent = cloudActive ? "Cloud API" : cloudSelected ? "Cloud disabled" : "Local model";
   $("#rail-processing").textContent = cloudActive ? "Cloud API enabled" : "Local processing";
@@ -193,6 +199,15 @@ function renderChips() {
 async function setSetting(k, v) {
   if (k === "cloud_enabled" && v && !await askConfirm("Enable cloud processing? Prompt Lab and voice-triggered prompt engineering text, instructions and relevant preferences will be sent to the configured API provider. Improve can make multiple paid calls. Estimates are not your bill.")) return;
   const value = k === "microphone" && v === "" ? null : v;
+  const speechChange = k === "speech_model", speechControl = speechChange ? $("#speech-model") : null;
+  if(speechChange) {
+    if(speechModelSavePending)return;
+    speechModelSavePending=true; speechOptionsVersion++;
+  }
+  if (speechControl) {
+    speechControl.dataset.saving = "true"; speechControl.disabled = true;
+    $("#speech-model-status").textContent = "Changing speech model…";
+  }
   const previewChange=k==="live_preview";
   if(previewChange) {previewSettingVersion++;previewActionPending++;settings.live_preview=!!value;invalidatePreview();}
   const settingPreviewVersion=previewSettingVersion;
@@ -200,10 +215,11 @@ async function setSetting(k, v) {
   try {
     try {
       const saved = await api().set_setting(k, value);
-      if (!saved) toast(k === "local_model" ? "Model choice could not be saved. Refresh the list and choose an available Ollama model." : "Setting could not be changed. Stop recording or reconnect the selected microphone.", true);
+      if (!saved) toast(speechChange ? "Speech model change did not complete. Check the selected model and speech status; finish any current recording or task before trying again." : k === "local_model" ? "Model choice could not be saved. Refresh the list and choose an available Ollama model." : "Setting could not be changed. Stop recording or reconnect the selected microphone.", true);
       if(k === "local_model") { modelChoiceUnconfirmed = false; if(saved) settings.local_model = value; }
-    } catch (e) { toast(k === "local_model" ? "Model choice was not confirmed. Refresh the list to check your saved choice." : previewChange?"Preview setting was not confirmed. Check Settings before continuing.":"Setting could not be saved. Your previous choice is preserved.", true); }
+    } catch (e) { toast(speechChange ? "Speech model change was not confirmed. Check the selected model and speech status before continuing." : k === "local_model" ? "Model choice was not confirmed. Refresh the list to check your saved choice." : previewChange?"Preview setting was not confirmed. Check Settings before continuing.":"Setting could not be saved. Your previous choice is preserved.", true); }
     const latest=await api().get_settings();
+    if (speechChange && api().get_options) options = await api().get_options();
     if(k === "local_model") modelChoiceUnconfirmed = false;
     if(previewChange&&settingPreviewVersion!==previewSettingVersion)return;
     settings=settingPreviewVersion===previewSettingVersion?latest:{...latest,live_preview:settings.live_preview};
@@ -213,13 +229,15 @@ async function setSetting(k, v) {
     toast("Setting status could not be refreshed. Reopen Settings to check your choice.",true);
   } finally {
     if(previewChange) {previewActionPending--;invalidatePreview();}
+    if(speechChange) {speechModelSavePending=false; speechOptionsVersion++;}
+    if(speechControl) { delete speechControl.dataset.saving; speechControl.disabled = speechControl.dataset.available === "false"; $("#speech-model-status").textContent = ""; }
   }
 }
 
 // ---------- settings page ----------
 const SETTING_ROWS = [
   ["hotkey", "Hotkey", "Hold to dictate, release to paste. In the Prompt lab it dictates into the focused box."],
-  ["speech_model", "Speech recognition model", "Turns your voice into words. Fixed for this version of Listen; other cached speech models are not selected here.", "speech"],
+  ["speech_model", "Speech recognition model", "Choose a model installed on this computer. Finish or cancel a recording before changing it.", "speech"],
   ["microphone", "Microphone", "Reconnect your saved microphone or explicitly choose the Windows default. Changes apply to the next recording."],
   ["live_preview", "Live transcript preview", "Show raw, provisional speech locally while recording. Updates may pause when processing is slow; final text is generated when you finish.", "toggle"],
   ["cleanup", "AI clean-up", "Fix grammar and fillers with the local model", "toggle"], ["style", "Clean-up style", "How much the wording is tightened"],
@@ -229,6 +247,7 @@ const SETTING_ROWS = [
   ["judge_model", "Cloud judge model", "Haiku is the budget default; Sonnet offers deeper critique. Applies when Claude and cloud processing are enabled."],
   ["cloud_enabled", "Allow cloud processing", "Sends Prompt Lab and voice-triggered prompt engineering text and relevant preferences to the selected API provider. Ordinary dictation cleanup stays local. Multiple paid calls may be made.", "toggle"],
 ];
+let speechModelSavePending=false, speechOptionsVersion=0;
 const swHTML = on => `<span class="sw-t" aria-hidden="true">${on ? "On" : "Off"}</span>`;
 function setSwitch(b, on) {
   b.classList.toggle("on", on); b.setAttribute("aria-checked", String(on));
@@ -236,12 +255,28 @@ function setSwitch(b, on) {
 }
 // Built once when the page opens. Later changes go through syncSettings so controls (and keyboard focus) are kept.
 function renderSettings() {
-  const group = k => ["hotkey","speech_model","microphone","live_preview"].includes(k) ? "Recording" : ["cleanup","style","local_model"].includes(k) ? "Text cleanup" : "Prompt Lab";
-  $("#settings-grid").innerHTML = SETTING_ROWS.map(([k, l, d, t], i) => `${!i || group(k) !== group(SETTING_ROWS[i-1][0]) ? `<h2>${group(k)}</h2>` : ""}<div class="setting"><div><div class="l">${l}</div><div class="d">${d}</div>${t === "speech" && options.speech_model_note ? `<div class="d">${esc(options.speech_model_note)}</div>` : ""}${t === "model" ? '<div class="d" id="model-status" role="status"></div>' : ""}</div>${
-    t === "toggle" ? `<button class="switch ${settings[k] ? "on" : ""}" data-toggle="${k}" role="switch" aria-checked="${!!settings[k]}" aria-label="${l}">${swHTML(!!settings[k])}</button>`
-      : t === "speech" ? `<span id="speech-model">${esc(options.speech_model_label || (options.speech_model ? `faster-whisper ${options.speech_model}` : "Status unavailable"))}</span>`
-      : t === "model" ? `<select id="local-model" aria-label="${l}" aria-describedby="model-status"></select><button class="btn" id="refresh-models">Refresh</button>`
-      : `<select data-key="${k}" aria-label="${l}">${Object.entries(options[k] || {}).map(([n, v]) => `<option value="${esc(v)}"${settings[k] === v ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>`}</div>`).join("");
+  const rows = new Map(SETTING_ROWS.map(row => [row[0], row]));
+  const speechChoices = () => {
+    const entries = Object.entries(options.speech_models || {[options.speech_model_label || options.speech_model || "Parakeet (default)"]: options.speech_model || "parakeet-unified-en-0.6b"});
+    const selected = settings.speech_model || options.speech_model || "parakeet-unified-en-0.6b";
+    return {available:entries.length>0, html: (!entries.some(([,value])=>value===selected) ? `<option value="${esc(selected)}" selected disabled>${esc(options.speech_model_label || selected)} (saved; unavailable)</option>` : "") + entries.map(([name,value])=>`<option value="${esc(value)}"${value===selected?" selected":""}>${esc(name)}${value==="parakeet-unified-en-0.6b"&&!/default/i.test(name)?" (default)":""}</option>`).join("")};
+  };
+  const control = key => {
+    const [k, l, , t] = rows.get(key);
+    return t === "toggle" ? `<button class="switch ${settings[k] ? "on" : ""}" data-toggle="${k}" role="switch" aria-checked="${!!settings[k]}" aria-label="${l}">${swHTML(!!settings[k])}</button>`
+      : t === "speech" ? `<select id="speech-model" data-key="speech_model" data-available="${speechChoices().available}" aria-label="${l}" aria-describedby="speech-stage-summary speech-model-note speech-model-status"${speechChoices().available&&!speechModelSavePending?"":" disabled"}>${speechChoices().html}</select>`
+      : t === "model" ? `<select id="local-model" aria-label="${l}" aria-describedby="model-status"></select><button class="btn quiet" id="refresh-models">Refresh</button>`
+      : `<select data-key="${k}" aria-label="${l}">${Object.entries(options[k] || {}).map(([n, v]) => `<option value="${esc(v)}"${settings[k] === v ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
+  };
+  const row = k => `<div class="setting"><div><div class="l">${rows.get(k)[1]}</div><div class="d">${rows.get(k)[2]}</div></div><div class="setting-controls">${control(k)}</div></div>`;
+  $("#settings-grid").innerHTML = `<p class="settings-intro">Speech captures your words. AI cleanup gives them readable structure. Prompt Lab writing and review are separate steps.</p>
+    <div class="model-stages">
+      <section class="stage-row" aria-labelledby="stage-speech"><div><h2 id="stage-speech">Speech recognition</h2><p>Turns your voice into words.</p></div><div class="stage-choice">${control("speech_model")}<p id="speech-stage-summary"></p><p id="speech-model-note">${esc(options.speech_model_note || rows.get("speech_model")[2])}</p><p id="speech-model-status" role="status"></p></div></section>
+      <section class="stage-row" aria-labelledby="stage-cleanup"><div><h2 id="stage-cleanup">AI cleanup</h2><p>Tidies wording and spoken structure.</p></div><div class="stage-choice"><div class="setting-controls">${control("local_model")}</div><p id="model-status" role="status"></p><p id="model-benchmark-summary"></p><p>Runs locally. This text model is also used by any local Prompt Lab stage.</p><div class="cleanup-preference"><span>AI clean-up</span>${control("cleanup")}</div><details class="model-benchmarks"><summary>Benchmarks and recommendation</summary><div id="model-benchmark-content"></div></details></div></section>
+      <section class="stage-row" aria-labelledby="stage-writing"><div><h2 id="stage-writing">Prompt writing</h2><p>Writes suggestions for your review.</p></div><div class="stage-choice">${control("engine")}<p data-route-summary="engine"></p></div></section>
+      <section class="stage-row" aria-labelledby="stage-review"><div><h2 id="stage-review">Prompt review</h2><p>Assesses the current draft.</p></div><div class="stage-choice"><div class="setting-controls">${control("judge")}${control("judge_model")}</div><p data-route-summary="judge"></p></div></section>
+    </div><h2 class="preference-heading">Recording preferences</h2>${["hotkey", "microphone", "live_preview"].map(row).join("")}
+    <h2 class="preference-heading">Text and prompt preferences</h2>${["style", "target", "cloud_enabled"].map(row).join("")}`;
   $$("#settings-grid select").forEach(s => s.onchange = () => setSetting(s.dataset.key, s.value));
   $$("#settings-grid .switch").forEach(b => b.onclick = () => setSetting(b.dataset.toggle, !settings[b.dataset.toggle]));
   if (api().get_microphones) api().get_microphones().then(m => {
@@ -257,12 +292,31 @@ function renderSettings() {
   });
   api().diagnostics().then(d => { $("#diag").innerHTML = Object.entries(d).map(([k, v]) => `<div><b>${esc(k)}</b> · <span${k==="speech"?' id="diag-speech"':""}>${esc(v)}</span></div>`).join(""); });
   $("#refresh-models").onclick = refreshModels; refreshModels();
+  const benchmarkDisclosure=$(".model-benchmarks");
+  benchmarkDisclosure.ontoggle=()=>{if(benchmarkDisclosure.open)benchmarkDisclosure.scrollIntoView({block:"nearest"});};
+  if(api().get_options) {
+    const speechSelect = $("#speech-model"), version=speechOptionsVersion;
+    api().get_options().then(latest=>{
+      if(speechSelect!==$("#speech-model") || speechModelSavePending || version!==speechOptionsVersion)return;
+      options=latest;
+      const choices=speechChoices(); speechSelect.innerHTML=choices.html; speechSelect.dataset.available=String(choices.available); speechSelect.disabled=!choices.available;
+      syncSettings();
+    }).catch(()=>{ if(speechSelect===$("#speech-model")&&version===speechOptionsVersion&&!speechModelSavePending)$("#speech-model-status").textContent="Could not refresh speech choices. Your current model is preserved."; });
+  }
+  syncSettings();
   renderLearned();
 }
 function syncSettings() {
   $$("#settings-grid select[data-key]").forEach(s => { const v = String(settings[s.dataset.key] ?? ""); if (s.value !== v && [...s.options].some(o => o.value === v)) s.value = v; });
   $$("#settings-grid .switch").forEach(b => setSwitch(b, !!settings[b.dataset.toggle]));
   const m = $("#local-model"); if (m && settings.local_model && [...m.options].some(o => o.value === settings.local_model)) m.value = settings.local_model;
+  $$('[data-route-summary]').forEach(el => {
+    const key = el.dataset.routeSummary, local = settings[key] !== "anthropic";
+    el.textContent = local ? `Uses ${settings.local_model || "the shared AI text model"} on this computer.` : settings.cloud_enabled ? "Cloud API enabled · paid calls. Text is sent only when you request this stage." : "Cloud selected, but cloud processing is disabled.";
+  });
+  const cloudJudge = $('#settings-grid select[data-key="judge_model"]');
+  if (cloudJudge) cloudJudge.hidden = settings.judge !== "anthropic";
+  const speechNote=$("#speech-model-note");if(speechNote&&options.speech_model_note)speechNote.textContent=options.speech_model_note;
 }
 let modelsRefreshVersion = 0, modelSavePending = false, modelChoiceUnconfirmed = false;
 async function refreshModels() {
@@ -278,8 +332,15 @@ async function refreshModels() {
     const selected = data.selected || settings.local_model || "";
     if (data.selected) { settings.local_model = data.selected; modelChoiceUnconfirmed = false; }
     const names = [...new Set((data.models || []).filter(n => typeof n === "string" && n))];
+    const benchmark = globalThis.LISTEN_MODEL_BENCHMARKS;
+    const tested = (benchmark?.models || []).filter(row=>names.includes(row.model)&&Number.isFinite(row.passed)&&Number.isFinite(row.cases)&&row.cases>0&&row.passed>=0&&row.passed<=row.cases&&Number.isFinite(row.medianSeconds)&&row.medianSeconds>=0).sort((a,b)=>b.passed/b.cases-a.passed/a.cases||a.medianSeconds-b.medianSeconds);
+    const ranking = new Map(tested.map((row,index)=>[row.model,{...row,rank:index+1}]));
+    if(tested.length)names.sort((a,b)=>(ranking.get(a)?.rank||Infinity)-(ranking.get(b)?.rank||Infinity)||a.localeCompare(b));
     const available = data.available === true || (data.available !== false && (names.length > 0 || !data.error));
-    const choices = names.map(n => new Option(n, n, n === selected, n === selected));
+    const choices = names.map(n => {
+      const result=ranking.get(n), label=result ? `${n} · ${Math.round(100*result.passed/result.cases)}%${result.rank===1?" (Recommended)":""}` : `${n}${benchmark?" (Not benchmarked)":""}`;
+      return new Option(label, n, n === selected, n === selected);
+    });
     if (selected && !names.includes(selected)) {
       const saved = new Option(selected + (available ? " (saved; not installed)" : " (saved; availability not checked)"), selected, true, true);
       saved.disabled = true; choices.unshift(saved);
@@ -294,6 +355,11 @@ async function refreshModels() {
       finally { modelSavePending = false; await refreshModels(); }
     };
     status.textContent = data.error || (names.length ? "Available in Ollama. Your saved choice is selected; Refresh does not download or run a model." : "No models are installed in Ollama. Refresh does not download a model.");
+    const detail=$("#model-benchmark-content");
+    const benchmarkSummary=$("#model-benchmark-summary");
+    if(benchmarkSummary)benchmarkSummary.textContent=benchmark&&tested.length ? `Scores use the previous ${tested[0].cases}-sample cleanup test (${benchmark.recorded}). See the results and limits below.` : "No benchmark score is available for these choices.";
+    if(detail)detail.innerHTML=benchmark ? `<p>Previous local cleanup test · ${esc(benchmark.recorded)}. Ranked by successful samples, then typical speed. The recommendation is for cleanup.</p><div class="benchmark-table-wrap"><table><thead><tr><th scope="col">Model</th><th scope="col">Successful samples</th><th scope="col">Typical time</th></tr></thead><tbody>${names.map(n=>{const row=ranking.get(n);return `<tr><th scope="row">${esc(n)}${row?.rank===1?' <span class="benchmark-recommended">Recommended</span>':""}</th><td>${row?`${row.passed}/${row.cases} · ${Math.round(100*row.passed/row.cases)}%`:"Not benchmarked"}</td><td>${row?`${row.medianSeconds.toFixed(2)} s`:"—"}</td></tr>`;}).join("")}</tbody></table></div><p>${esc(benchmark.method)}</p><p>${esc(benchmark.limitation)} Speed can vary with other apps and the selected speech model.</p>` : "<p>No recorded local benchmark is available. Refresh checks installed models only.</p>";
+    syncSettings();
   } catch {
     if (!current()) return;
     const saved = new Option((settings.local_model || "No saved model") + (modelChoiceUnconfirmed ? " (last known; save not confirmed)" : " (saved; availability not checked)"), settings.local_model || "", true, true);
@@ -574,7 +640,7 @@ async function send() {
   finally {sending=false;$("#btn-send").disabled=!!lab.busy;renderLabActivity();}
 }
 $("#btn-send").onclick=send;
-composer.addEventListener("keydown",ev=> { if(ev.key==="Enter"&&!ev.shiftKey&&!ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&!ev.isComposing) {ev.preventDefault();send();} });
+composer.addEventListener("keydown",ev=> { if(ev.key==="Enter"&&!ev.shiftKey&&!ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&!ev.isComposing&&ev.keyCode!==229) {ev.preventDefault();send();} });
 $("#btn-copy").onclick=async()=> {if(!ed.value.trim()||!await flushAll())return;try {if(await api().copy_text(ed.value)) {api().lab_kept();toast("Copied");} else toast("Copy failed",true);}catch{toast("Copy not confirmed",true);} };
 $("#btn-paste").onclick=async()=> {if(!ed.value.trim()||!await flushAll())return;try{await api().paste_draft(ed.value);}catch{toast("Paste not confirmed. Check your destination before trying again.",true);} };
 $("#btn-new").onclick=async()=> {if(!await flushAll())return;try{if(await api().new_draft()){editVersion++;await loadLab();$("#drawer").close();ed.focus();}else toast("Could not create a draft; your text remains.",true);}catch{toast("New draft not confirmed; your text remains.",true);} };
@@ -754,7 +820,7 @@ $("#palette").onclick = ev => { if (ev.target.id === "palette") closePalette(); 
 
 // ---------- keyboard ----------
 document.addEventListener("keydown", ev => {
-  if (ev.defaultPrevented || ev.isComposing) return;
+  if (ev.defaultPrevented || ev.isComposing || ev.keyCode === 229) return;
   const pal = $("#palette").open;
   if(!pal && document.querySelector('dialog[open]')) return;
   if (pal) {
@@ -791,6 +857,9 @@ function setStatus(st) {
   const cls = stoppingPreview ? "busy" : s === "recording" ? recordingStarting ? "busy" : "recording" : s === "idle" ? "idle" : s === "error" ? "error" : s === "loading" ? "" : "busy";
   const recordingLabel = st.recording_ready == null ? "recording" : st.recording_ready ? "listening" : "starting…";
   const label = stoppingPreview ? st.pending_dictations>0 ? "finishing dictation…" : "stopping preview…" : s === "recording" ? recordingLabel + (st.locked ? " · hands-free" : "") : s === "loading" ? (st.last_error ? "failed to start" : "loading…") : s;
+  const keyName = Object.entries(options.hotkey || {}).find(([, value]) => value === settings.hotkey)?.[0] || "the dictation key";
+  setDisplayedProperty($("#dictate-heading"), "textContent", s === "recording" ? recordingStarting ? "Starting…" : "Listening" : s === "loading" ? "Getting ready…" : s === "error" ? "Needs your attention" : st.busy || stoppingPreview ? "Finishing your words…" : "Ready when you are");
+  setDisplayedProperty($("#dictate-instruction"), "textContent", s === "recording" ? recordingStarting ? "Opening your microphone. Wait for the ready cue." : st.locked ? `Tap ${keyName} or choose Finish recording. Esc cancels.` : "Release the dictation key to finish. Esc cancels." : s === "loading" ? "Loading speech. Your saved words remain available." : `Hold ${keyName} to speak. Release to send your words, or tap for hands-free.`);
   for (const el of $$(".status")) {
     setDisplayedProperty($(".dot", el), "className", "dot " + cls);
     setDisplayedProperty($(".status-text", el), "textContent", label + (settings.cleanup && !st.llm_ok && s === "idle" ? st.cleanup_warming ? " · AI clean-up loading…" : " · AI clean-up offline" : ""));
@@ -804,13 +873,22 @@ function setStatus(st) {
   setDisplayedProperty($("#btn-cancel"), "disabled", s!=="recording");
   $("#btn-finish").classList.toggle("primary", s==="recording");
   const speech=st.speech_runtime||{}, speechNotice=$("#speech-runtime-status");
-  const speechMessage=speech.reason==="preview_recovery_pending" ? "Live preview paused. Speech will recover when you finish recording, or choose Retry startup when idle." : speech.state==="failed" ? "Speech is unavailable. Finish or cancel any recording, then choose Retry startup." : speech.state==="switching" ? (speech.device==="cpu" ? "Switching speech to your computer's processor. Please wait." : "Loading local speech. You can keep using the window.") : speech.fallback ? "Speech is using your computer's processor because GPU acceleration is unavailable. Whisper Small is unchanged; dictation may take longer." : "";
+  const speechMessage=speech.reason==="preview_recovery_pending" ? "Live preview paused. Speech will recover when you finish recording, or choose Retry startup when idle." : speech.state==="failed" ? "Speech is unavailable. Finish or cancel any recording, then choose Retry startup." : speech.state==="switching" ? (speech.device==="cpu" ? "Switching speech to your computer's processor. Please wait." : "Loading local speech. You can keep using the window.") : speech.fallback ? "Speech is using your computer's processor because GPU acceleration is unavailable. Your selected speech model is unchanged; dictation may take longer." : "";
   speechNotice.classList.toggle("hidden",!speechMessage);
   if(speechNotice.textContent!==speechMessage)speechNotice.textContent=speechMessage;
   $("#btn-retry").classList.toggle("hidden",!((st.state==="loading"&&st.last_error)||speech.state==="failed"||speech.reason==="preview_recovery_pending"));
   setDisplayedProperty($("#btn-retry"), "disabled", !(st.speech_retry_ready??(st.state==="loading"&&!!st.last_error)));
   const speechDiagnostic=$("#diag-speech");
   if(speechDiagnostic&&st.speech_summary&&speechDiagnostic.textContent!==st.speech_summary)speechDiagnostic.textContent=st.speech_summary;
+  const speechSelect=$("#speech-model"), speechStatus=$("#speech-model-status");
+  if(speechSelect?.tagName==="SELECT") {
+    const pending=speechModelSavePending||speechSelect.dataset.saving==="true";
+    setDisplayedProperty(speechSelect,"disabled",pending||!!st.speech_model_switching||st.state==="recording"||!!st.busy||!!st.lab_busy||!!st.pending_dictations||!!st.preview_busy||(st.state==="loading"&&!st.last_error)||speechSelect.dataset.available==="false");
+    if(st.speech_model_switching||pending)setDisplayedProperty(speechStatus,"textContent","Changing speech model…");
+    else if(!pending)setDisplayedProperty(speechStatus,"textContent","");
+    if(!pending&&!st.speech_model_switching&&st.speech_runtime?.model&&[...speechSelect.options].some(option=>option.value===st.speech_runtime.model))setDisplayedProperty(speechSelect,"value",st.speech_runtime.model);
+  }
+  const speechSummary=$("#speech-stage-summary");if(speechSummary&&st.speech_summary)setDisplayedProperty(speechSummary,"textContent",st.speech_summary);
   syncBanners();
 }
 let lastErr = "", retainedVersion = -1;

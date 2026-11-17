@@ -18,7 +18,7 @@ function element(){let value='',writes=0;const classes=new Set();return {
 };}
 const status=element();status.children={'.dot':element(),'.status-text':element()};
 function $(selector,parent){return parent?parent.children[selector]:(controls[selector]??=element())}
-const context=vm.createContext({$, $$:selector=>selector==='.status'?[status]:[],settings:{cleanup:true},document:{body:element()}});
+const context=vm.createContext({$, $$:selector=>selector==='.status'?[status]:[],settings:{cleanup:true,hotkey:'ctrl_r'},options:{hotkey:{'Right Ctrl':'ctrl_r'}},document:{body:element()}});
 vm.runInContext(source.slice(source.indexOf('// ---------- polling ----------'),source.indexOf('let lastErr =')),context);
 function render(runtime,extra={}){context.st={state:'idle',busy:'',locked:false,last_error:'',llm_ok:true,speech_runtime:runtime,speech_retry_ready:false,...extra};vm.runInContext('setStatus(st)',context);}
 render({state:'ready',device:'cuda',fallback:false});
@@ -29,7 +29,7 @@ render(cpu);
 const notice=$('#speech-runtime-status');
 assert(!notice.classList.contains('hidden'));
 assert.match(notice.textContent,/computer's processor/);
-assert.match(notice.textContent,/Whisper Small is unchanged/);
+assert.match(notice.textContent,/Your selected speech model is unchanged/);
 assert.match(notice.textContent,/may take longer/);
 render(cpu,{speech_summary:'faster-whisper small on CPU (int8)'});
 assert.equal($('#diag-speech').textContent,'faster-whisper small on CPU (int8)');

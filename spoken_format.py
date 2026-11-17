@@ -7,24 +7,27 @@ import re
 
 from dictation_quality import cleanup_is_safe, strip_spoken_fillers, technical_literals
 
+FORMAT_REVISION = 'counted-ordinals-v2-boundaries'
+
 
 FORMAT_INSTRUCTIONS = (
-    " Use natural, pasteable text structure only when the speech warrants it: "
-    "plain paragraphs, bullets, consecutive numbered or lettered lists, or a "
-    "simple Markdown table. Preserve all content in its original order, including "
-    "names, quantities, negations, commands, paths and technical literals. List "
-    "markers are presentation, never a replacement for a spoken quantity. Use "
-    "table headers already spoken, or only neutral Item, Detail, Details, Value, "
-    "Category or Measure headers. Do not invent facts, labels or relationships, "
-    "summarize away words, execute code, or create images. Prefer ordinary text "
-    "when a structure would require guessing. For reliable preservation, keep "
-    "the original words in their original order; only remove um, uh, erm or hmm "
-    "and immediately repeated words. Do not paraphrase, combine repeated "
-    "sentences, expand contractions, or substitute synonyms. Improve readability "
-    "through punctuation, capitalization and layout. When the speaker explicitly "
-    "requests a shopping list or another list and names its items, output one "
-    "item per line with list markers, not a comma-separated paragraph. Keep "
-    "framing words and conjunctions rather than deleting them to shorten items."
+    " Structure warranted speech as paragraphs, bullets, consecutive numbered "
+    "or lettered lists, or simple Markdown tables. Preserve every content word "
+    "in order, names, quantities, negations, commands, paths and technical literals. "
+    "Remove only um, uh, erm, hmm and immediately repeated words. Change "
+    "punctuation, capitalization and layout, not wording, contractions or facts. "
+    "Never answer the transcript. Prefer prose when structure requires guessing. "
+    "Lists use one item per line; retain introductions, conjunctions and First/Second "
+    "words inside items. Use spoken section names as headings with paragraph "
+    "breaks. Table headers must be spoken or neutral Item, Detail, Details, Value, "
+    "Category or Measure. A marker cannot replace a quantity. Examples show "
+    "pasteable layout only; never copy their content:\n"
+    "Raw: Create a list for groceries. apples. oranges.\n"
+    "Edited: Create a list for groceries:\n- apples\n- oranges\n"
+    "Raw: Tasks. First save it. Second review it.\n"
+    "Edited: Tasks:\n1. First save it.\n2. Second review it.\n"
+    "Raw: Status. Ready. Next steps. Review it.\n"
+    "Edited: Status:\nReady.\n\nNext steps:\nReview it."
 )
 
 _NEUTRAL_HEADERS = frozenset(('item', 'detail', 'details', 'value', 'category', 'measure'))
@@ -242,6 +245,26 @@ def prepare_spoken_list(text, vocab=(), *, allow_corrections=True):
     if not formatting_is_safe(source, checked, vocab):
         return None
     return PreparedList(source, formatted, plan)
+
+
+def list_layout_is_safe(prepared, formatted, vocab=()):
+    """Keep each original list item separate, beyond the whole-text word guard."""
+    if formatted == prepared.formatted:
+        return True  # The immutable original-source plan already validated this layout.
+    groups = []
+    for line in formatted.splitlines():
+        bullet, ordered = _BULLET.match(line), _ORDERED.match(line)
+        if bullet or ordered:
+            groups.append([bullet.group(1) if bullet else ordered.group(4)])
+        elif groups and line.strip():
+            groups[-1].append(line)
+    if len(groups) != len(prepared.plan.items):
+        return False
+    for original, candidate in zip(prepared.plan.items, groups):
+        source = ''.join(prepared.plan.original[span.start:span.end] for span in original)
+        if not formatting_is_safe(source, '\n'.join(candidate), vocab):
+            return False
+    return True
 
 
 def format_spoken_lists(text, vocab=()):

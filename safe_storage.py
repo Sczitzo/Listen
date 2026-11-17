@@ -90,6 +90,9 @@ def read_history(path, limit=500):
 
 
 def valid_setting(key, value):
+    if key == 'speech_model':
+        from speech_runtime import SPEECH_MODEL_IDS
+        return isinstance(value, str) and value in SPEECH_MODEL_IDS
     options = {'hotkey': {'ctrl_r', 'shift_r', 'alt_r', 'pause', 'scroll_lock'}, 'style': {'tighten', 'clean'},
                'target': {'claude_code', 'general'}, 'judge': {'anthropic', 'local'}, 'engine': {'anthropic', 'local'},
                'judge_model': {'claude-haiku-5-5', 'claude-sonnet-5-5'}}

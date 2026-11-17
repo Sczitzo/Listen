@@ -2,6 +2,7 @@
 import ctypes
 from ctypes import wintypes
 import os
+import math
 import time
 import tkinter as tk
 
@@ -11,10 +12,21 @@ from target_icon import window_icon
 C = dict(bg='#2d2925', border='#a49380', fg='#f1e9dd', status='#c8bdaf',
          thumb_hover='#dcc09a', thumb='#a49380', accent='#dcc09a', on_accent='#282117')
 OVERLAY_WIDTH = 500
-HEADER_HEIGHT = 44
-FOOTER_ROW_HEIGHT = 28
+HEADER_HEIGHT = 32
+FOOTER_ROW_HEIGHT = 32
 FOOTER_PADDING = 12
 FOOTER_HEIGHT = FOOTER_ROW_HEIGHT + 2 * FOOTER_PADDING
+
+
+def client_animation_enabled():
+    try:
+        query = ctypes.WinDLL('user32', use_last_error=True).SystemParametersInfoW
+        query.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
+        query.restype = wintypes.BOOL
+        enabled = wintypes.BOOL()
+        return bool(query(0x1042, 0, ctypes.byref(enabled), 0) and enabled.value)
+    except (AttributeError, OSError):
+        return False
 
 
 def card_bounds(work_area, width=720, height=310, margin=16, *, centered=False):
@@ -52,6 +64,29 @@ def fitted_height(content_pixels, area, previous=0, chrome=56):
 def text_pixels(widget):
     result = widget.count('1.0', 'end', 'update', 'ypixels')
     return int(result[0] if isinstance(result, tuple) else result or 0)
+
+
+def draw_card_border(canvas, width, height, top=1):
+    """Keep the complete rounded stroke inside the native window's clip."""
+    canvas.delete('card-border')
+    if width < 4 or height < 4:
+        return
+    left, right, bottom = 1, width - 2, height - 2
+    top = min(max(1, top), bottom - 1)
+    radius = min(12, (right - left) / 2, (bottom - top) / 2)
+    options = dict(fill=C['border'], width=1, tags='card-border')
+    for points in ((left + radius, top, right - radius, top),
+                   (right, top + radius, right, bottom - radius),
+                   (left + radius, bottom, right - radius, bottom),
+                   (left, top + radius, left, bottom - radius)):
+        canvas.create_line(*points, **options)
+    for box, start in (((left, top, left + 2 * radius, top + 2 * radius), 90),
+                       ((right - 2 * radius, top, right, top + 2 * radius), 0),
+                       ((right - 2 * radius, bottom - 2 * radius, right, bottom), 270),
+                       ((left, bottom - 2 * radius, left + 2 * radius, bottom), 180)):
+        canvas.create_arc(*box, start=start, extent=90, style='arc',
+                          outline=C['border'], width=1, tags='card-border')
+    canvas.tag_lower('card-border')
 
 
 def place_card(window, anchor, area=None, height=310, *, width=720, centered=False):
@@ -194,26 +229,26 @@ class PreviewCard:
         self._footer_height = FOOTER_ROW_HEIGHT
         self._status_layout = None
         self._icon = None
-        self._on_finish, self._on_cancel = on_finish, on_cancel
+        self._on_cancel = on_cancel
+        self._animation_enabled = client_animation_enabled()
+        self._animation_id = None
         self._recording_controls = False
         self._header_height = 0
+        self._legend_height = 0
+        self._legend_width = 0
         self._pressed_action = None
 
-        self.background = tk.Frame(self.window, bg=C['bg'], highlightthickness=1, highlightbackground=C['border'])
+        self.background = tk.Canvas(self.window, bg=C['bg'], highlightthickness=0, borderwidth=0, takefocus=False)
         self.background.pack(fill='both', expand=True)
-        self.header = tk.Frame(self.background, bg=C['bg'])
-        self.meter = tk.Canvas(self.header, width=38, height=28, bg=C['bg'], highlightthickness=0, takefocus=False)
+        self.background.bind('<Configure>', self._draw_border)
+        self.legend = tk.Frame(self.background, bg=C['bg'], padx=6)
+        self.meter = tk.Canvas(self.legend, width=38, height=28, bg=C['bg'], highlightthickness=0, takefocus=False)
         self.meter.pack(side='left', padx=(0, 10))
         self.bars = [self.meter.create_line(5 + i * 7, 14, 5 + i * 7, 14, width=4,
                                           capstyle='round', fill=C['accent']) for i in range(5)]
-        self.heading = tk.Label(self.header, text='Listen', bg=C['bg'], fg=C['fg'],
+        self.heading = tk.Label(self.legend, text='Listen', bg=C['bg'], fg=C['fg'],
                                 font=('Candara', 12, 'bold'), anchor='w')
         self.heading.pack(side='left', fill='x', expand=True)
-        self.finish_button = tk.Button(self.header, text='Finish', command=lambda: self._act('finish'),
-                                       font=('Segoe UI', 10, 'bold'), bg=C['accent'], fg=C['on_accent'],
-                                       activebackground=C['accent'], activeforeground=C['on_accent'],
-                                       relief='flat', borderwidth=0, padx=16, pady=4, takefocus=False)
-        self.finish_button.bind('<ButtonPress-1>', lambda event: self._arm_action('finish'))
         self.body = tk.Frame(self.background, bg=C['bg'])
         self.body.grid_rowconfigure(0, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
@@ -249,14 +284,41 @@ class PreviewCard:
     def _arm_action(self, action):
         self._pressed_action = (action, self._generation) if self._shown and self._recording_controls else None
 
+    def _draw_border(self, _event=None):
+        draw_card_border(self.background, self.background.winfo_width(), self.background.winfo_height(),
+                         self._legend_height / 2 if self._header_height else 1)
+
     def _act(self, action):
         pressed, self._pressed_action = self._pressed_action, None
-        callback = self._on_finish if action == 'finish' else self._on_cancel
-        button = self.finish_button if action == 'finish' else self.cancel_button
-        if (pressed == (action, self._generation) and self._shown and self._recording_controls
-                and callback and str(button['state']) != 'disabled'):
-            if callback(self._generation):
+        if (action == 'cancel' and pressed == (action, self._generation) and self._shown and self._recording_controls
+                and self._on_cancel and str(self.cancel_button['state']) != 'disabled'):
+            if self._on_cancel(self._generation):
                 self.hide()
+
+    def _animate(self):
+        self._animation_id = None
+        if not (self._animation_enabled and self._shown and self._recording_controls and self.window.winfo_viewable()):
+            return
+        # A state cue, not an input-level waveform; its geometry never animates.
+        strength = .72 + .28 * (.5 - .5 * math.cos(time.monotonic() * math.pi))
+        channels = []
+        for offset in (1, 3, 5):
+            base, accent = int(C['bg'][offset:offset + 2], 16), int(C['accent'][offset:offset + 2], 16)
+            channels.append(round(base + (accent - base) * strength))
+        color = '#' + ''.join(f'{channel:02x}' for channel in channels)
+        for bar in self.bars:
+            self.meter.itemconfigure(bar, fill=color)
+        self._animation_id = self.window.after(80, self._animate)
+
+    def _stop_animation(self):
+        if self._animation_id is not None:
+            try:
+                self.window.after_cancel(self._animation_id)
+                for bar in self.bars:
+                    self.meter.itemconfigure(bar, fill=C['accent'])
+            except tk.TclError:
+                pass
+            self._animation_id = None
 
     def _protect_activation(self):
         if self._native_hook is not None:
@@ -336,28 +398,29 @@ class PreviewCard:
 
     def _place(self, area, height, has_text):
         width, height, _, _ = card_bounds(area, width=OVERLAY_WIDTH, height=height, centered=True)
-        layout = area, width, height, has_text, self._footer_height, self._header_height
+        layout = area, width, height, has_text, self._footer_height, self._header_height, self._legend_height, self._legend_width
         if layout == self._layout:
             return
         self.footer.place(x=14, rely=1, y=-(self._footer_height + FOOTER_PADDING),
                           relwidth=1, width=-28, height=self._footer_height)
         if self._header_height:
-            self.header.place(x=14, y=8, relwidth=1, width=-28, height=self._header_height - 8)
+            self.legend.place(x=20, y=0, width=min(self._legend_width, max(1, width - 40)), height=self._legend_height)
         else:
-            self.header.place_forget()
+            self.legend.place_forget()
         if has_text:
             self.body.place(x=15, y=12 + self._header_height, relwidth=1, width=-30, relheight=1,
                             height=-(30 + self._footer_height + self._header_height))
         else:
             self.body.place_forget()
         place_card(self.window, 0, area, height=height, width=width, centered=True)
+        self._draw_border()
         self._layout, self._height = layout, height
 
     def _target_icon(self, target):
         image = None
         try:
             if target is not None:
-                icon = window_icon(target.hwnd, target.pid, 23, C['bg'])
+                icon = window_icon(target.hwnd, target.pid, 32, C['bg'])
                 if icon is not None:
                     image = ImageTk.PhotoImage(icon, master=self.window)
         except (OSError, AttributeError, tk.TclError):
@@ -371,8 +434,6 @@ class PreviewCard:
         phase = snapshot.get('phase')
         if phase != 'finishing' and not (phase == 'final' and show) and (not enabled or not show):
             show, text, status = bool(activity), '', activity
-        if hands_free_key:
-            status = f'Listening · Tap {hands_free_key} to finish · Esc to cancel'
         if generation is None:
             generation = snapshot.get('generation')
         try:
@@ -391,18 +452,24 @@ class PreviewCard:
             listening = recording and (activity.startswith('Listening') or (enabled and not activity.startswith('Starting')))
             self._recording_controls = recording
             self.heading.configure(text='Listening' if listening else 'Starting')
-            self.finish_button.configure(state='normal' if listening and self._on_finish else 'disabled')
             self.cancel_button.configure(state='normal' if recording and self._on_cancel else 'disabled')
-            if recording and self._on_finish:
-                self.finish_button.pack(side='right', padx=(10, 0))
-            else:
-                self.finish_button.pack_forget()
             if recording and self._on_cancel:
-                self.cancel_button.pack(side='right', before=self.status, padx=(8, 0))
+                self.cancel_button.pack(side='right', padx=(8, 0))
             else:
                 self.cancel_button.pack_forget()
-            header_height = max(HEADER_HEIGHT, self.header.winfo_reqheight() + 8) if recording else 0
-            header_changed = header_height != self._header_height
+            if recording:
+                # A newly packed container still reports its previous requested size.
+                legend_height = max(self.meter.winfo_reqheight(), self.heading.winfo_reqheight())
+                legend_width = self.meter.winfo_reqwidth() + 10 + self.heading.winfo_reqwidth() + 12
+                header_height = max(HEADER_HEIGHT, legend_height + 8)
+                status = ''
+                self.status.pack_forget()
+            else:
+                legend_height = legend_width = header_height = 0
+                self.status.pack(side='right', fill='both', expand=True)
+            header_changed = (header_height != self._header_height or legend_height != self._legend_height
+                              or legend_width != self._legend_width)
+            self._legend_height, self._legend_width = legend_height, legend_width
             self._header_height = header_height
             width = card_bounds(area, width=OVERLAY_WIDTH)[0]
             # Reserve the outer padding, badge gap, and label padding before wrapping.
@@ -411,7 +478,7 @@ class PreviewCard:
             if (status, wrap) != self._status_layout:
                 self.status.configure(text=status, wraplength=wrap)
                 self._status_layout = status, wrap
-            footer_height = max(FOOTER_ROW_HEIGHT, self.status.winfo_reqheight(), self.badge.winfo_reqheight(),
+            footer_height = max(FOOTER_ROW_HEIGHT, self.status.winfo_reqheight() if not recording else 0, self.badge.winfo_reqheight(),
                                 self.cancel_button.winfo_reqheight() if recording and self._on_cancel else 0)
             footer_delta = footer_height - self._footer_height
             self._footer_height = footer_height
@@ -439,10 +506,16 @@ class PreviewCard:
                 half = (4, 8, 11, 8, 4)[index] if listening else (2, 2, 4, 2, 2)[index]
                 x = 5 + index * 7
                 self.meter.coords(bar, x, 14 - half, x, 14 + half)
+            if recording and self._animation_enabled:
+                if self._animation_id is None:
+                    self._animate()
+            else:
+                self._stop_animation()
         except (OSError, tk.TclError):
             self.hide()
 
     def hide(self):
+        self._stop_animation()
         self._pressed_action = None
         self._pending_fit = None
         if self._shown:
@@ -458,6 +531,7 @@ class PreviewCard:
         if self._destroyed:
             return
         self._destroyed = True
+        self._stop_animation()
         if self._fit_id is not None:
             self.window.after_cancel(self._fit_id)
             self._fit_id = None

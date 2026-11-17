@@ -21,6 +21,7 @@ CASES = (
 )
 d._quitting = False
 d.SETTINGS.update(cleanup=True, learn=False)
+d._llm_ok = False
 with patch.object(d, 'system_prompt', return_value='Synthetic field-trial cleanup.'), \
      patch.object(d, 'vocab_words', return_value=[]):
     for raw in CASES:
@@ -51,6 +52,7 @@ with patch.object(d, 'system_prompt', return_value='Synthetic field-trial cleanu
 
     # Full recording/history keeps original source; only final text is corrected.
     d._cleanup_policy = CleanupPolicy()
+    d._llm_ok = False
     history, delivered = [], []
     with patch.object(d, 'transcribe', return_value=correction), \
          patch.object(d.cleanup_http, 'post_json') as request, \
@@ -75,7 +77,7 @@ try:
         assert time.monotonic() < until
         time.sleep(.002)
     assert events[-1][1] == d.layout_explicit_lists(d.correction_source(correction))
-    assert c.cached_whole(1, 'synthetic', 'fixed', correction) == correction
+    assert c.cached_whole(1, 'synthetic', 'fixed', correction) == d.layout_explicit_lists(d.correction_source(correction))
 finally:
     assert c.close() and not c.alive
 print('Field-trial integration: local final lists, preview, cleanup-off, scoped corrections and original raw history passed')

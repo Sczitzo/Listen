@@ -179,12 +179,14 @@ async function controlsAndGrouping(){
  h.c.st=state(3,'',{preview_busy:true});vm.runInContext('setStatus(st)',h.c);
  assert(!h.$('#btn-finish').disabled&&!h.$('#btn-cancel').disabled);
  h.c.st=state(4,'',{state:'idle',preview_busy:true,speech_runtime:{state:'ready',device:'cpu',fallback:true}});vm.runInContext('setStatus(st)',h.c);
- assert.match(h.$('#speech-runtime-status').textContent,/Whisper Small is unchanged/);
+ assert.match(h.$('#speech-runtime-status').textContent,/Your selected speech model is unchanged/);
  vm.runInContext(between('const SETTING_ROWS =','async function refreshModels()'),h.c);
  vm.runInContext('renderSettings()',h.c);await Promise.resolve();
  const markup=h.$('#settings-grid').innerHTML;
- assert(markup.indexOf('<h2>Recording</h2>')<markup.indexOf('data-toggle="live_preview"'));
- assert(markup.indexOf('data-toggle="live_preview"')<markup.indexOf('<h2>Text cleanup</h2>'));
+ const stages=['stage-speech','stage-cleanup','stage-writing','stage-review'];
+ assert(stages.every((id,i)=>markup.includes(`id="${id}"`)&&(!i||markup.indexOf(`id="${id}"`)>markup.indexOf(`id="${stages[i-1]}"`))));
+ assert(markup.indexOf('id="stage-cleanup"')<markup.indexOf('id="local-model"')&&markup.indexOf('id="local-model"')<markup.indexOf('id="stage-writing"'));
+ assert(markup.indexOf('Recording preferences')<markup.indexOf('data-toggle="live_preview"'));
  assert.match(markup,/raw, provisional speech locally/);assert.equal(h.focusCalls(),0);
 }
 (async()=>{await presentation();await clearFences();await stopFences();await settingFences();await controlsAndGrouping();

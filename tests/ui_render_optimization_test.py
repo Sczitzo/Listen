@@ -22,7 +22,7 @@ class Element {
 }
 const elements=new Map(),get=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
 const statuses=[new Element(),new Element()];for(const el of statuses){el.dot=new Element();el.label=new Element();}
-const context=vm.createContext({settings:{cleanup:true},document:{body:get('body')},
+const context=vm.createContext({settings:{cleanup:true,hotkey:'ctrl_r'},options:{hotkey:{'Right Ctrl':'ctrl_r'}},document:{body:get('body')},
  $:(selector,root)=>root?(selector==='.dot'?root.dot:root.label):get(selector),
  $$:(selector,root)=>selector==='i'?root.children:selector==='.status'?statuses:[],console});
 const bars=source.slice(source.indexOf('// ---------- bars ----------'),source.indexOf('// ---------- chips ----------'));

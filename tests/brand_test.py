@@ -56,10 +56,10 @@ assert [float(o) for o in opacities] == [b[3] for b in bars if b[3] is not None]
 
 # 4. The product is called Listen wherever a person reads it.
 js = (ROOT / 'ui' / 'app.js').read_text(encoding='utf-8')
-# "Whisper Small" is the speech model's own name, not the product, so it stays; any other "Whisper" is the old product name.
+# Supported Whisper model names remain technology names after the Listen rename.
 assert '<title>Listen</title>' in html and 'Whisper' not in html and 'Dictation' not in html
-assert 'Whisper' not in js.replace('Whisper Small', ''), 'old product name left in ui/app.js'
-assert 'Whisper Small' in js, 'the speech model name must not be renamed'
+assert 'Whisper' not in re.sub(r'\bWhisper (?:Small|Medium|Large v3(?: Turbo)?)\b', '', js), 'old product name left in ui/app.js'
+assert 'options.speech_models' in js and 'options.speech_model_label' in js, 'speech choices must use the real backend model names'
 assert 'webview.create_window("Listen"' in source_text and 'pystray.MenuItem("Open Listen"' in source_text
 assert 'f"Listen: {s}"' in source_text and 'Whisper recovery' not in source_text and 'Keep Whisper open' not in source_text
 card = (ROOT / 'preview_card.py').read_text(encoding='utf-8')

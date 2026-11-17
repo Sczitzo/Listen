@@ -16,8 +16,8 @@ from spoken_format import prepare_spoken_list, formatting_is_safe
 
 RAW = "Okay, I need a shopping list with three items or so. It's going to be apples, bananas, oranges, actually scratch that milk."
 EXPECTED = "Okay, I need a shopping list with three items or so.\nIt's going to be\n- apples\n- bananas\n- milk."
-PUNCTUATED_MODEL = RAW.replace(',', ';')
-assert formatting_is_safe(RAW, PUNCTUATED_MODEL)
+PUNCTUATED_MODEL = EXPECTED.replace(',', ';')
+assert formatting_is_safe(prepare_spoken_list(RAW).source, PUNCTUATED_MODEL)
 assert prepare_spoken_list(RAW).formatted == EXPECTED
 
 d._quitting = False
@@ -30,6 +30,7 @@ with patch.object(d, 'system_prompt', return_value='Synthetic natural-list clean
         prepared = prepare_spoken_list(raw)
         assert prepared is not None
         d._cleanup_policy = CleanupPolicy()
+        d._llm_ok = False
         with patch.object(d, '_chat', return_value=prepared.source) as chat, \
              patch.object(d, 'prepare_spoken_list', wraps=original_prepare) as prepare, \
              patch.object(d, 'correction_source', side_effect=AssertionError('No legacy reparse')):
@@ -63,6 +64,7 @@ with patch.object(d, 'system_prompt', return_value='Synthetic natural-list clean
     for cached in (False, True):
         history, delivered = [], []
         d._cleanup_policy = CleanupPolicy()
+        d._llm_ok = True
         d._lab_thread.preview_generation = 77
         timings = {}
         d._lab_thread.timings = timings
@@ -73,9 +75,10 @@ with patch.object(d, 'system_prompt', return_value='Synthetic natural-list clean
                  patch.object(d, '_append_history', side_effect=history.append), \
                  patch.object(d, 'paste', side_effect=lambda text, target: delivered.append(text) or {'status': 'pasted'}):
                 d.process([object()], 2, time.perf_counter(), generations=(d._history_generation, d._recovery_generation))
-            assert history[-1]['raw'] == RAW and history[-1]['text'] == EXPECTED
-            assert delivered == [EXPECTED + ' ']
-            chat.assert_not_called()
+            expected_result = PUNCTUATED_MODEL if cached else EXPECTED
+            assert history[-1]['raw'] == RAW and history[-1]['text'] == expected_result
+            assert delivered == [expected_result + ' ']
+            assert chat.call_count == int(not cached)
             assert bool(timings.get('cleanup_cache_hit')) == cached
         finally:
             for name in ('preview_generation', 'timings'):
@@ -94,7 +97,7 @@ try:
         while c.busy:
             assert time.monotonic() < until
             time.sleep(.002)
-        assert events[-1][1] == EXPECTED
+        assert events[-1][1] == PUNCTUATED_MODEL
         assert prepare.call_count == 1 and prepare.call_args.args[0] == RAW
     assert c.cached_whole(1, 'synthetic', 'fixed', RAW) == PUNCTUATED_MODEL
 finally:
@@ -113,6 +116,7 @@ d._gen, d._record_generations, d._state = generation, context, 'recording'
 d._preview.begin(generation, context, now=0)
 d._recording.set()
 d.SETTINGS['live_preview'] = True
+d._llm_ok = False
 warm = d._draft.gate.try_cleanup_warm()
 assert warm is not None
 clock = 0.

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Listen</title>
-<link rel="stylesheet" href="app.css?v=20261116-listen11">
+  <link rel="stylesheet" href="app.css?v=20261116-listen13">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -60,17 +60,19 @@
     </div>
     <!-- ================= Dictate ================= -->
     <section class="page" data-page="dictate">
-      <header class="page-head"><h1 tabindex="-1">Dictate</h1><div class="status" id="status-dictate"><span class="dot"></span><span class="status-text">idle</span></div></header>
-      <div class="chips" id="chips-dictate"></div>
-      <div class="actions recording-actions"><button class="btn" id="btn-finish" disabled>Finish recording</button><button class="btn" id="btn-cancel" disabled>Cancel recording</button><button class="btn hidden" id="btn-retry">Retry startup</button></div>
-      <div class="card hero">
-        <div class="hero-bars" id="bars-dictate" aria-hidden="true"></div>
-        <div class="hero-text">
-          <div class="hero-title" id="hero-title"><span class="quiet-instrument" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span>Hold <kbd id="hero-key">Right Ctrl</kbd> and speak</span></div>
-          <div class="hero-sub">Release to paste, or tap to go hands-free.</div>
-          <details class="how"><summary>How it works</summary><p>Tap to go hands-free, tap again to finish or Esc to discard. Hotkey plus another key is a normal shortcut. Begin with “Hey, prompt engineer this” followed by your request to use your selected Engineer instead of cleanup.</p></details>
+      <header class="page-head"><div><h1 tabindex="-1">Dictate</h1><p class="page-intro">Your voice, where you’re working.</p></div><div class="status" id="status-dictate"><span class="dot"></span><span class="status-text">idle</span></div></header>
+      <section class="dictate-center" aria-label="Recording controls">
+        <div class="key-visual" aria-hidden="true"><span>In Listen</span><kbd id="hero-key">Ctrl</kbd><span id="hero-key-side">right key</span></div>
+        <div class="ready-instruction">
+          <div class="hero-title" id="hero-title"><span class="quiet-instrument" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><h2 id="dictate-heading">Ready when you are</h2></div>
+          <p class="hero-sub" id="dictate-instruction">Hold Right Ctrl to speak. Release to send your words, or tap for hands-free.</p>
+          <div class="actions recording-actions"><button class="btn" id="btn-finish" disabled>Finish recording</button><button class="btn quiet" id="btn-cancel" disabled>Cancel recording</button><button class="btn hidden" id="btn-retry">Retry startup</button>
+            <details class="how"><summary>How it works</summary><p>Tap to go hands-free, tap again to finish or Esc to discard. Hotkey plus another key is a normal shortcut. Begin with “Hey, prompt engineer this” followed by your request to use your selected Engineer instead of cleanup.</p></details>
+          </div>
         </div>
-      </div>
+        <div class="hero-bars" id="bars-dictate" aria-hidden="true"></div>
+      </section>
+      <div class="text-row"><div><h2>Text style</h2><p>Keep the meaning. Tidy the words.</p></div><div class="chips" id="chips-dictate"></div></div>
       <fieldset class="card frame hidden live-preview" id="live-preview" role="region" aria-labelledby="live-preview-title" aria-live="off">
         <legend class="frame-title"><h2 id="live-preview-title">Recording transcript · provisional</h2></legend>
         <p class="muted" id="live-preview-note">Provisional. Final text is generated when you finish.</p>
@@ -80,7 +82,7 @@
       <fieldset class="card frame vocabulary">
         <legend class="frame-title"><label for="vocab">Vocabulary</label></legend>
         <p class="muted frame-hint" id="vocab-hint">Names and terms to spell exactly, comma or line separated.</p>
-        <textarea id="vocab" class="input frame-input" aria-describedby="vocab-hint" rows="3" spellcheck="false"></textarea>
+        <textarea id="vocab" class="input frame-input" aria-describedby="vocab-hint" rows="2" spellcheck="false"></textarea>
         <p class="muted frame-hint" id="vocab-status" role="status"></p>
         <div class="suggest hidden" id="vocab-suggest"><span class="muted">Seen often, not in your vocabulary:</span><span id="vocab-chips"></span></div>
       </fieldset>
@@ -124,14 +126,21 @@
           <span class="score-gaps muted" id="score-gaps"></span>
           <button class="link" id="score-details">Details</button>
         </div>
-        <div class="actions draft-actions">
+      </fieldset>
+      <fieldset class="composer frame lab-field" aria-labelledby="instruction-label">
+        <legend class="frame-title lab-field-title"><label id="instruction-label" for="composer">Instruction</label></legend>
+        <textarea id="composer" class="input frame-input" rows="8" placeholder="Describe what you want to change." autocomplete="off"></textarea>
+        <p id="lab-action-error" class="muted hidden" role="alert"></p>
+      </fieldset>
+      <div class="actions draft-actions shared-lab-actions">
+          <button class="btn primary" id="btn-send" title="Enter">Write suggestion<svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button>
           <button class="btn quiet" id="btn-score" title="Get feedback on the current draft against the rubric"><svg class="ico" aria-hidden="true"><use href="#i-chart"/></svg>Get feedback</button>
-          <button class="btn quiet" id="btn-improve" title="Assess this draft and generate a suggestion for review. Multiple calls may incur API charges."><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg>Suggest changes</button>
           <span class="spacer"></span>
           <button class="btn quiet" id="btn-copy"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button>
           <div class="more-actions">
             <button class="btn quiet" id="btn-more" aria-label="More draft actions" title="More draft actions" aria-expanded="false" aria-controls="more-menu">···</button>
             <div class="actions hidden" id="more-menu" aria-label="More draft actions">
+              <button class="btn" id="btn-improve" title="Assess this draft and generate a suggestion for review. Multiple calls may incur API charges."><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg>Suggest changes</button>
               <button class="btn" id="btn-rebuild" title="Generate a fresh suggestion from this draft. Review before applying.">Rewrite from scratch</button>
               <button class="btn" id="btn-paste" title="Ctrl+Enter · pastes into the window you came from"><svg class="ico" aria-hidden="true"><use href="#i-clipboard"/></svg>Paste</button>
               <button class="btn" id="btn-save" title="Ctrl+S"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg>Save favorite</button>
@@ -139,21 +148,12 @@
               <details class="archived"><summary>Archived drafts</summary><div class="actions"><label for="archived-drafts" class="sr-only">Archived drafts</label><select id="archived-drafts"><option value="">Choose a draft</option></select><button class="btn" id="btn-restore">Restore</button><button class="btn ghost" id="btn-delete-draft">Delete selected draft</button></div></details>
             </div>
           </div>
-        </div>
-      </fieldset>
-      <fieldset class="composer frame lab-field" aria-labelledby="instruction-label">
-        <legend class="frame-title lab-field-title"><label id="instruction-label" for="composer">Instruction</label></legend>
-        <input id="composer" class="input frame-input" placeholder="Describe what you want to change." autocomplete="off">
-        <p id="lab-action-error" class="muted hidden" role="alert"></p>
-        <div class="compose-foot">
-          <span class="muted"><kbd id="composer-key">Right Ctrl</kbd> to dictate</span>
-          <div class="suggestion-status">
+      </div>
+      <div class="compose-foot lab-key-help"><span class="muted"><kbd id="composer-key">Right Ctrl</kbd> to dictate</span><span class="muted">Enter to write · Shift+Enter for a new line</span></div>
+      <div class="suggestion-status lab-suggestion-state">
             <span id="lab-busy" role="status"></span>
             <button class="btn quiet hidden" id="btn-review" aria-haspopup="dialog" aria-controls="candidate">Compare suggestion<svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button>
-            <button class="btn primary" id="btn-send" title="Enter">Write suggestion<svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button>
-          </div>
-        </div>
-      </fieldset>
+      </div>
       <div class="popover hidden" id="library">
         <div class="popover-head"><span>Favorites</span><span class="muted">Choose a favorite to load it. Remove offers Undo.</span></div>
         <ul class="list" id="fav-list"></ul>
@@ -172,8 +172,8 @@
 
     <!-- ================= Settings ================= -->
     <section class="page" data-page="settings">
-      <header class="page-head"><h1 tabindex="-1">Settings</h1></header>
-      <div class="card settings-grid" id="settings-grid"></div>
+      <header class="page-head"><div><h1 tabindex="-1">Settings</h1><p class="page-intro">A clear place for each part of the process.</p></div></header>
+      <div class="settings-grid" id="settings-grid"></div>
       <fieldset class="card frame"><legend class="frame-title"><h2>Shortcuts</h2></legend>
         <div class="shortcuts">
           <div><kbd>Ctrl</kbd><kbd>1</kbd>…<kbd>4</kbd> pages</div><div><kbd>Ctrl</kbd><kbd>Enter</kbd> paste draft</div>
@@ -251,6 +251,7 @@
 
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 </div>
-<script src="app.js?v=20261116-listen11"></script>
+<script src="model-benchmarks.js?v=20261116-listen13"></script>
+<script src="app.js?v=20261116-listen13"></script>
 </body>
 </html>

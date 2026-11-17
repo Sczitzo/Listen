@@ -258,7 +258,7 @@ def load_functions(source, *, recognizer=None, post=None, vocab=()):
           '_prepare_list': prepare_spoken_list, '_layout': layout_explicit_lists, '_NO_PROXY': {}, '_await_speech': lambda: None,
           '_draft': SimpleNamespace(gate=SimpleNamespace(
               reserve_authoritative=lambda: SimpleNamespace(release=lambda: None), wait_draft=lambda timeout: True)),
-          'CLEANUP_TIMEOUT_S': 15., '_cleanup_policy': CleanupPolicy(),
+          'CLEANUP_TIMEOUT_S': 15., '_cleanup_policy': CleanupPolicy(), '_cleanup_warm_pending': None,
           'cleanup_http': SimpleNamespace(post_json=bounded_chat, NUM_BATCH=cleanup_http.NUM_BATCH),
           '_data_lock': threading.RLock(), '_quitting': False,
           '_llm_ok': False, '_operation_settings': lambda: dict(settings),

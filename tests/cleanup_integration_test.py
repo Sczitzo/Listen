@@ -145,12 +145,108 @@ d.SETTINGS['local_model'] = 'qwen2.5:7b'
 
 # Selection acknowledgements invalidate readiness; old-model completions cannot restore it.
 d._llm_ok = True
-with patch.object(d.Api, 'get_local_models', return_value={'models': ['other-model']}):
+with patch.object(d.Api, 'get_local_models', return_value={'models': ['other-model']}), \
+     patch.object(d, '_schedule_pending_cleanup_warm', create=True) as schedule:
     assert d.Api().set_setting('local_model', 'other-model')
-assert not d._llm_ok
+assert schedule.call_count == 1, 'A durable changed selection must schedule readiness without a recording'
+assert not d._llm_ok and d._cleanup_warm_pending == 'other-model'
 d._set_cleanup_status('qwen2.5:7b', True)
 assert not d._llm_ok
 d.SETTINGS['local_model'] = 'qwen2.5:7b'
+
+# Save failure/noop/inventory reads cannot create or replace a pending warm.
+d._cleanup_warm_pending = 'prior-pending'
+d._llm_ok = True
+with patch.object(d.Api, 'get_local_models', return_value={'models': ['qwen2.5:7b', 'other-model']}), \
+     patch.object(d, '_schedule_pending_cleanup_warm') as schedule:
+    assert d.Api().set_setting('local_model', 'qwen2.5:7b')
+    assert d._cleanup_warm_pending == 'prior-pending'
+    with patch.object(d, 'atomic_write_json', side_effect=OSError('synthetic disk failure')):
+        try: d.Api().set_setting('local_model', 'other-model')
+        except OSError: pass
+        else: raise AssertionError('Failed save was acknowledged')
+    assert d.SETTINGS['local_model'] == 'qwen2.5:7b' and d._cleanup_warm_pending == 'prior-pending' and d._llm_ok
+    schedule.assert_not_called()
+d._cleanup_warm_pending = None
+
+class ImmediateWarmThread:
+    def __init__(self, target, args=(), **kwargs): self.target, self.args = target, args
+    def start(self): self.target(*self.args)
+
+# A owns the sole warm ticket while B and then C are saved. Only latest C
+# starts after A releases its gate; a stale A success must never publish ready.
+for quit_before_completion in (False, True):
+    d._cleanup_policy = CleanupPolicy()
+    d.SETTINGS.update(local_model='qwen2.5:7b', cleanup=True)
+    d._llm_ok = False
+    d._quitting = False
+    d._cleanup_warm_pending = None
+    warmed = []
+    def changed_while_warming(payload, timeout):
+        warmed.append(payload['model'])
+        if len(warmed) == 1:
+            assert d.Api().set_setting('local_model', 'other-model')
+            assert d.Api().set_setting('local_model', 'latest-model')
+            assert d._cleanup_warm_pending == 'latest-model' and not d._llm_ok
+            assert d._cleanup_policy.is_warming('qwen2.5:7b')
+            if quit_before_completion: d._quitting = True
+        else:
+            assert payload['model'] == 'latest-model' and not d._llm_ok
+        return {}
+    with patch.object(d.Api, 'get_local_models', return_value={'models': ['other-model', 'latest-model']}), \
+         patch.object(d.threading, 'Thread', ImmediateWarmThread), \
+         patch.object(d.cleanup_http, 'warm_json', changed_while_warming):
+        d._warm_llm(interval=0)
+        d._schedule_pending_cleanup_warm()
+    assert warmed == (['qwen2.5:7b'] if quit_before_completion else ['qwen2.5:7b', 'latest-model'])
+    assert d._llm_ok is not quit_before_completion
+    assert d._cleanup_warm_pending == ('latest-model' if quit_before_completion else None)
+    lease = d._draft.gate.try_cleanup_warm()
+    assert lease, 'Latest-selection followup leaked the model gate'
+    lease.release()
+
+d._quitting = False
+d.SETTINGS['local_model'] = 'qwen2.5:7b'
+d._cleanup_policy = CleanupPolicy(clock=lambda: clock[0])
+d._cleanup_warm_pending = 'qwen2.5:7b'
+d._cleanup_policy.timed_out('qwen2.5:7b')
+with patch.object(d.cleanup_http, 'warm_json', return_value={}) as warm, \
+     patch.object(d.threading, 'Thread', ImmediateWarmThread):
+    assert not d._schedule_pending_cleanup_warm()
+    warm.assert_not_called()
+    clock[0] += 30
+    lease = d._draft.gate.reserve_authoritative()
+    assert d._schedule_pending_cleanup_warm()
+    warm.assert_not_called()
+    assert d._cleanup_warm_pending == 'qwen2.5:7b'
+    lease.release()
+    assert d._schedule_pending_cleanup_warm()
+    assert warm.call_count == 1 and d._llm_ok and d._cleanup_warm_pending is None
+    assert not d._schedule_pending_cleanup_warm()
+print('PASS saved model changes recover readiness; latest pending selection survives older warm, busy gate, cooldown and Quit')
+
+# A launch failure keeps the latest request recoverable. The existing idle
+# worker retries it once, then readiness consumes the marker without a loop.
+d._cleanup_policy = CleanupPolicy()
+d._cleanup_warm_pending = 'qwen2.5:7b'
+d._llm_ok = False
+class FailedWarmThread(ImmediateWarmThread):
+    def start(self): raise RuntimeError('synthetic thread startup failure')
+with patch.object(d.threading, 'Thread', FailedWarmThread):
+    assert not d._schedule_pending_cleanup_warm()
+assert d._cleanup_warm_pending == 'qwen2.5:7b' and not d._cleanup_policy.is_warming('qwen2.5:7b')
+class PendingQueue:
+    unfinished_tasks = 0
+    def get(self, timeout): raise queue.Empty()
+with patch.object(d, '_quitting', False), patch.object(d, '_jobs', PendingQueue()), \
+     patch.object(d, '_preview', SimpleNamespace(in_flight=lambda: False)), \
+     patch.object(d, '_maybe_warm_field_access'), \
+     patch.object(d, '_maybe_preview', side_effect=lambda: setattr(d, '_quitting', True)), \
+     patch.object(d.threading, 'Thread', ImmediateWarmThread), \
+     patch.object(d.cleanup_http, 'warm_json', return_value={}) as warm:
+    d.worker()
+assert warm.call_count == 1 and d._llm_ok and d._cleanup_warm_pending is None
+print('PASS failed warm-thread startup releases ownership and real idle worker recovers latest saved selection once')
 
 # A newer timeout cannot slip between warm-policy acceptance and readiness publication.
 d._cleanup_policy = CleanupPolicy()

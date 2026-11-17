@@ -51,7 +51,7 @@ check('no dead rm/prompt css', '.list li .rm' not in css and '.prompt.recording'
 check('card titles are h2', re.search(r'<div class="card-title">(?!<h2)', html) is None)
 check('quit uses svg not glyph', '⏻' not in html and 'href="#i-power"' in html)
 check('history word count is spelled out, never a bare "w"', 'function wordLabel' in js and '.length}w' not in js and '}w${e.cost' not in js)
-check('finish/cancel stay visible (disabled) while idle', 'class="btn" id="btn-finish" disabled' in html and 'class="btn" id="btn-cancel" disabled' in html)
+check('finish/cancel stay visible (disabled) while idle', all(re.search(r'<button\b[^>]*id="'+key+r'"[^>]*\bdisabled', html) for key in ('btn-finish','btn-cancel')))
 check('how-it-works disclosure', '<details class="how"><summary>How it works</summary>' in html)
 check('draft actions disclosure is a named button', 'id="btn-more" aria-label="More draft actions"' in html
       and 'aria-expanded="false" aria-controls="more-menu"' in html)
@@ -96,13 +96,14 @@ await run('settings page updated in place (On/Off text, aria-checked)',async()=>
  assert.equal(sw.attrs['aria-checked'],'false');assert.equal(label.textContent,'Off');assert(!sw.cls.has('on'));assert.equal(sel.value,'clean');
  c.settings.cleanup=true;vm.runInContext('syncSettings()',c);assert.equal(label.textContent,'On');assert(sw.cls.has('on'));
 });
-await run('renderSettings markup has On/Off text and model row under Text cleanup',async()=>{
+await run('renderSettings has four processing stages with the shared model under AI cleanup',async()=>{
  const R=registry();
  const c=vm.createContext({settings:{cleanup:true,live_preview:false},options:{},esc:x=>String(x),$:R,$$:()=>[],api:()=>({diagnostics:async()=>({})}),refreshModels(){},renderLearned(){},setSetting(){}});
  vm.runInContext(cut('const SETTING_ROWS =','async function refreshModels()')+'renderSettings()',c);
  const m=R('#settings-grid').innerHTML;
  assert(m.includes('>On</span>')&&m.includes('>Off</span>'),'switches lack visible On/Off text');
- assert(m.indexOf('<h2>Text cleanup</h2>')<m.indexOf('id="local-model"')&&m.indexOf('id="local-model"')<m.indexOf('<h2>Prompt Lab</h2>'),'model row not under Text cleanup');
+ assert(m.indexOf('id="stage-cleanup"')<m.indexOf('id="local-model"')&&m.indexOf('id="local-model"')<m.indexOf('id="stage-writing"'),'model row not under AI cleanup');
+ assert.equal((m.match(/id="local-model"/g)||[]).length,1,'Shared local model must have one selection owner');
 });
 await run('setSetting on Settings page does not rebuild the page',async()=>{
  let rendered=0,synced=0;
@@ -125,7 +126,7 @@ await run('error toasts stay 8s, pause on hover, role=alert, dismissible',async(
 });
 await run('Finish is primary while recording; Finish/Cancel stay visible but disabled while idle',async()=>{
  const R=registry(),status=el();status['.dot']=el();status['.status-text']=el();
- const c=vm.createContext({$:(s,r)=>r?r[s]:R(s),$$:s=>s==='.status'?[status]:[],settings:{cleanup:true},document:{body:el()}});
+ const c=vm.createContext({$:(s,r)=>r?r[s]:R(s),$$:s=>s==='.status'?[status]:[],settings:{cleanup:true,hotkey:'ctrl_r'},options:{hotkey:{'Right Ctrl':'ctrl_r'}},document:{body:el()}});
  vm.runInContext(cut('// ---------- polling ----------','let lastErr ='),c);
  const idle={state:'idle',busy:'',last_error:'',llm_ok:true,speech_runtime:{state:'ready'}};
  c.st=idle;vm.runInContext('setStatus(st)',c);

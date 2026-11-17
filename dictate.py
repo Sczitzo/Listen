@@ -59,7 +59,8 @@ import requests
 import sounddevice as sd
 from PIL import Image, ImageDraw
 from pynput import keyboard as pk
-from speech_runtime import SpeechRuntime, SpeechUnavailableError, load_speech_runtime
+from speech_runtime import (SpeechRuntime, SpeechUnavailableError, load_speech_runtime,
+                            DEFAULT_SPEECH_MODEL, cached_speech_models, speech_model_label, speech_model_note)
 from speech_process import SpeechProcessRuntime
 from transcript_preview import FINAL_NOTICE_SECONDS, TranscriptPreview, audio_interval
 from draft_preview import DraftCoordinator, DraftJob
@@ -70,7 +71,7 @@ from dataclasses import replace as replace_target
 from field_access import FieldAccess
 from multiline_delivery import MultilineDelivery
 from dictation_quality import filter_segments, validate_score
-from spoken_format import formatting_is_safe as cleanup_is_safe, FORMAT_INSTRUCTIONS, layout_explicit_lists, prepare_spoken_list
+from spoken_format import formatting_is_safe as cleanup_is_safe, FORMAT_INSTRUCTIONS, FORMAT_REVISION, layout_explicit_lists, prepare_spoken_list, list_layout_is_safe
 from spoken_corrections import correction_source
 from voice_commands import split_voice_command, engineering_preservation_issue
 from safe_storage import (atomic_write_json, load_json, read_history, valid_setting,
@@ -273,6 +274,7 @@ LEARNED_FILE = os.path.join(APP_DIR, "learned.json")
 SETTINGS = {"hotkey": "ctrl_r", "cleanup": True, "style": "tighten", "learn": True, "live_preview": True,
             "vocab": "", "target": "claude_code", "judge": "anthropic", "engine": "anthropic"}
 SETTINGS["microphone"] = None
+SETTINGS['speech_model'] = DEFAULT_SPEECH_MODEL
 SETTINGS.update(local_model="qwen2.5:7b", cloud_enabled=False, judge_model=DEFAULT_JUDGE_MODEL)
 SETTINGS = validated_settings(load_json(SETTINGS_FILE, {}), SETTINGS)
 _data_lock = threading.RLock()
@@ -432,13 +434,14 @@ def learned_prefs():
 
 SAMPLE_RATE = 16000
 PREVIEW_MIN_AUDIO_S = 2
-MODEL_SIZE = "parakeet-unified-en-0.6b"  # Owner-requested integration; the cached Whisper path remains supported.
+MODEL_SIZE = SETTINGS['speech_model']  # Selected speech model, shared by startup, Retry and idle wake.
 OLLAMA_URL = "http://127.0.0.1:11434/api/chat"  # NOT localhost: Windows tries IPv6 first, +2s per request
 OLLAMA_MODEL = "qwen2.5:7b"  # llama 3.1/3.2 both answered transcripts instead of cleaning
 KEEP_ALIVE = "5m"    # release qwen's 5GB of VRAM after idle; _warm_llm() on key press hides the reload
 CLEANUP_TIMEOUT_S = 15.0  # owner-selected dictation cleanup budget; raw text on timeout
 CLEANUP_WARM_TIMEOUT_S = 60.0  # background model loading; never extends final cleanup
 _cleanup_policy = CleanupPolicy()
+_cleanup_warm_pending = None  # Latest durably saved selection awaiting readiness.
 _last_cleanup_timing = {}
 _last_dictation_timing = {}
 NUM_CTX = 8192       # ponytail: ~15 min of speech; Ollama's 4096 default silently truncated long rambles
@@ -632,7 +635,7 @@ def _draft_input():
             prompt = system_prompt()
             vocabulary = tuple(vocab_words())
         import hashlib
-        key = hashlib.sha256(json.dumps((enabled, selected, prompt, vocabulary),
+        key = hashlib.sha256(json.dumps((enabled, selected, prompt, vocabulary, FORMAT_REVISION),
                                        ensure_ascii=True).encode('utf-8')).hexdigest()
         if key != _draft_key:
             _draft_key = key
@@ -661,12 +664,12 @@ def _offer_draft():
         if job is None or not _valid_draft(job):
             return
         snapshot = _preview.snapshot()
-        if snapshot['draft_source_revision'] == job.revision and snapshot['draft_reason'] == 'local list':
+        if snapshot['draft_source_revision'] == job.revision and snapshot['draft_reason'] == 'local list' and not _llm_ok:
             return
         if not _draft.needs_work(job):
             return
         prepared = _prepare_list(job.text, job.vocab)
-        if prepared is not None:
+        if prepared is not None and not _llm_ok:
             if _valid_draft(job):
                 _draft.retire(preserve_whole=True)
                 _publish_draft(job, prepared.formatted, 'ready', 'local list')
@@ -786,8 +789,8 @@ IDLE_TICK_MS = 100
 SPEECH_IDLE_UNLOAD_S = 600.0   # unload the speech model after this much true idleness (frees GPU memory)
 SPEECH_WAKE_WAIT_S = 60.0      # how long a finished recording waits for the model to reload
 _speech_asleep = False         # model deliberately unloaded while idle; the next recording reloads it
-_sleeping = _waking = False
-_speech_lock = threading.Lock()  # serializes unload and reload so there is never a second model
+_sleeping = _waking = _speech_changing = False
+_speech_lock = threading.Lock()  # serializes idle unload, wake and model-choice ownership
 _idle_since = time.monotonic()
 _open_thread = None  # the one microphone-opener thread; a hung driver call must not accumulate threads
 IDLE_WORKER_POLL_S = .25
@@ -866,17 +869,99 @@ def _close_mic(gen=None):
 
 
 def _speech_status():
-    if _speech_asleep:
+    with _mic_lock:
+        if _state == "loading" and _last_error:
+            return {"model": MODEL_SIZE, "device": None, "compute_type": None,
+                    "fallback": False, "state": "failed", "reason": "startup_unavailable"}
+        if _speech_asleep:
+            return {"model": MODEL_SIZE, "device": None, "compute_type": None,
+                    "fallback": False, "state": "switching", "reason": "idle_unloaded"}
+        runtime = model or _starting_speech
+        if isinstance(runtime, (SpeechRuntime, SpeechProcessRuntime)):
+            return runtime.status()
         return {"model": MODEL_SIZE, "device": None, "compute_type": None,
-                "fallback": False, "state": "switching", "reason": "idle_unloaded"}
-    if _state == "loading" and _last_error:
-        return {"model": MODEL_SIZE, "device": None, "compute_type": None,
-                "fallback": False, "state": "failed", "reason": "startup_unavailable"}
-    runtime = model or _starting_speech
-    if isinstance(runtime, (SpeechRuntime, SpeechProcessRuntime)):
-        return runtime.status()
-    return {"model": MODEL_SIZE, "device": None, "compute_type": None,
-            "fallback": False, "state": "loading", "reason": ""}
+                "fallback": False, "state": "loading", "reason": ""}
+
+
+def _ensure_speech_services():
+    global _worker_started, _listener
+    if not _worker_started:
+        threading.Thread(target=worker, daemon=True).start()
+        _worker_started = True
+    if _listener is None or not _listener.is_alive():
+        _listener = _create_keyboard_listener()
+        _listener.start()
+
+
+def _set_speech_model(selected):
+    global model, MODEL_SIZE, _state, _last_error, _speech_changing, _speech_asleep, _starting_speech, _idle_since
+    if selected not in cached_speech_models().values() or not _startup_lock.acquire(blocking=False):
+        return False
+    admitted, committed, candidate, previous = False, False, None, None
+    try:
+        with _lab_lock, _mic_lock:
+            recovering = _state == 'loading' and bool(_last_error)
+            if (_quitting or _speech_changing or _recording.is_set() or _pending_recordings or _pending_pastes
+                    or _busy or _lab['busy'] or _jobs.unfinished_tasks or _preview.in_flight() or _draft.busy
+                    or _startup_pending or _waking or _sleeping or _starting_speech is not None
+                    or _stream is not None or _streams
+                    or (_open_thread is not None and _open_thread.is_alive())
+                    or (_state != 'idle' and not recovering)):
+                return False
+            if selected == MODEL_SIZE and (_speech_asleep or _speech_status()['state'] == 'ready'):
+                return True
+            previous, previous_state, previous_error = model, _state, _last_error
+            _speech_changing, _state, _last_error = True, 'loading', ''
+            admitted = True
+        with _speech_lock:
+            candidate = load_speech_process(selected)
+            status = candidate.status()
+            if status.get('model') != selected or status.get('state') != 'ready':
+                raise SpeechUnavailableError()
+            with _lab_lock, _mic_lock, _data_lock:
+                if _quitting:
+                    raise SpeechUnavailableError()
+                _ensure_speech_services()
+                # Rebase on current preferences: unrelated saves may finish during loading.
+                updated = dict(SETTINGS, speech_model=selected)
+                atomic_write_json(SETTINGS_FILE, updated)
+                SETTINGS.update(updated)
+                MODEL_SIZE, model, _speech_asleep = selected, candidate, False
+                _idle_since = time.monotonic()
+                committed = True
+            if previous is not None and not previous.close():
+                raise SpeechUnavailableError()
+            with _mic_lock:
+                _state = 'idle'
+                _last_error = previous_error if previous_state == 'idle' else ''
+            return True
+    except Exception:
+        if not admitted:
+            return False
+        closed = True
+        if not committed and candidate is not None:
+            try:
+                closed = candidate.close()
+            except Exception:
+                closed = False
+        with _mic_lock:
+            if committed:
+                _starting_speech = previous
+                _state = 'loading'
+                _last_error = 'The new speech choice was saved, but the previous speech worker could not stop. Choose Retry startup before recording.'
+            else:
+                if not closed:
+                    _starting_speech = candidate
+                services_ready = bool(_worker_started and _listener is not None and _listener.is_alive())
+                _state = previous_state if closed and _starting_speech is None and services_ready else 'loading'
+                _last_error = ('Speech model could not change. Your previous choice is unchanged.' if _state == 'idle'
+                               else 'Speech model could not change or finish recovery. Your previous choice is unchanged; choose Retry startup before recording.')
+        return False
+    finally:
+        if admitted:
+            with _mic_lock:
+                _speech_changing = False
+        _startup_lock.release()
 
 
 def _speech_retry_available():
@@ -890,7 +975,8 @@ def _speech_retry_available():
 
 
 def _speech_description(speech):
-    name = "Parakeet Unified English 0.6B" if MODEL_SIZE == "parakeet-unified-en-0.6b" else f"faster-whisper {MODEL_SIZE}"
+    selected = speech.get('model', MODEL_SIZE)
+    name = "Parakeet Unified English 0.6B" if selected == DEFAULT_SPEECH_MODEL else f"faster-whisper {selected}"
     if speech['reason'] == 'preview_recovery_pending':
         return f"{name}: preview paused; recovery pending at Finish or safe Retry"
     if speech['reason'] == 'idle_unloaded':
@@ -949,7 +1035,7 @@ def _begin_wake():
     """Reload in the background; the recording that triggered it keeps running meanwhile."""
     global _waking
     with _mic_lock:
-        if _waking or not _speech_asleep or _quitting:
+        if _waking or not _speech_asleep or _quitting or _speech_changing:
             return
         _waking = True
     threading.Thread(target=_wake_speech, daemon=True).start()
@@ -1057,7 +1143,7 @@ def _start(target=_CAPTURE_TARGET):
 
 
 def _set_cleanup_status(selected, ready, *, warm_ticket=None, timed_out=False):
-    global _llm_ok
+    global _llm_ok, _cleanup_warm_pending
     with _data_lock:
         if warm_ticket is not None:
             if not _cleanup_policy.finish_warm(warm_ticket, success=ready):
@@ -1068,6 +1154,8 @@ def _set_cleanup_status(selected, ready, *, warm_ticket=None, timed_out=False):
             _cleanup_policy.timed_out(selected)
         if not _quitting and selected == SETTINGS.get('local_model', OLLAMA_MODEL):
             _llm_ok = ready
+            if ready and _cleanup_warm_pending == selected:
+                _cleanup_warm_pending = None
         return True
 
 
@@ -1081,16 +1169,38 @@ def _warm_llm(interval=60.0):
     _perform_cleanup_warm(selected, ticket)
 
 
-def _perform_cleanup_warm(selected, ticket, generation=None):
-    if _quitting or (generation is not None and (generation != _gen or not _recording.is_set())):
-        _cleanup_policy.finish_warm(ticket, success=None)
-        return
-    lease = _draft.gate.try_cleanup_warm()
-    if lease is None:
-        _cleanup_policy.finish_warm(ticket, success=None)
-        return
-    success = False
+def _schedule_pending_cleanup_warm():
+    # Reuse the existing warm ownership/thread route after a saved model change.
+    with _data_lock:
+        selected = SETTINGS.get('local_model', OLLAMA_MODEL)
+        if (_quitting or not SETTINGS.get('cleanup') or _cleanup_warm_pending != selected):
+            return False
+        ticket = _cleanup_policy.claim_warm(selected, interval=0)
+    if ticket is None:
+        return False
     try:
+        threading.Thread(target=_perform_cleanup_warm, args=(selected, ticket), daemon=True).start()
+    except Exception:
+        _cleanup_policy.finish_warm(ticket, success=None)
+        return False  # The existing worker can retry the still-pending selection.
+    return True
+
+
+def _perform_cleanup_warm(selected, ticket, generation=None):
+    global _cleanup_warm_pending
+    lease, success = None, None
+    try:
+        if _quitting or (generation is not None and (generation != _gen or not _recording.is_set())):
+            return
+        lease = _draft.gate.try_cleanup_warm()
+        if lease is None:
+            return
+        with _data_lock:
+            if _quitting or selected != SETTINGS.get('local_model', OLLAMA_MODEL):
+                return
+            if _cleanup_warm_pending == selected:
+                _cleanup_warm_pending = None
+        success = False
         cleanup_http.warm_json({"model": selected, "keep_alive": KEEP_ALIVE,
                                 "options": {"num_ctx": NUM_CTX, "num_batch": cleanup_http.NUM_BATCH}}, timeout=CLEANUP_WARM_TIMEOUT_S)
         success = True
@@ -1100,7 +1210,12 @@ def _perform_cleanup_warm(selected, ticket, generation=None):
         try:
             _set_cleanup_status(selected, success, warm_ticket=ticket)
         finally:
-            lease.release()
+            if lease is not None:
+                lease.release()
+        with _data_lock:
+            newer_selection = _cleanup_warm_pending is not None and _cleanup_warm_pending != selected
+        if newer_selection:
+            _schedule_pending_cleanup_warm()  # A newer model gets its turn only after the old gate releases.
 
 
 def _stop():
@@ -1418,6 +1533,7 @@ def worker():
                 timeout=.1 if _recording.is_set() or _busy else IDLE_WORKER_POLL_S)
         except queue.Empty:
             _maybe_warm_field_access()
+            _schedule_pending_cleanup_warm()
             if _recording.is_set() and SETTINGS.get('cleanup'):
                 # Reuse the normal warm-up route; no additional idle service.
                 selected = SETTINGS.get('local_model', OLLAMA_MODEL)
@@ -1581,11 +1697,14 @@ def _process_recording(chunks, held, released, target=None, generations=None):
                 prompt, vocabulary = system_prompt(), tuple(vocab_words())
                 import hashlib
                 key = hashlib.sha256(json.dumps((bool(SETTINGS.get('cleanup', True)), selected,
-                    prompt, vocabulary), ensure_ascii=True).encode('utf-8')).hexdigest()
+                    prompt, vocabulary, FORMAT_REVISION), ensure_ascii=True).encode('utf-8')).hexdigest()
                 cached = _draft.cached_whole(recording_id, generation, key, raw)
-                if SETTINGS.get('cleanup', True) and isinstance(cached, str) and cleanup_is_safe(raw, cached, vocabulary):
-                    prepared = _prepare_list(raw, vocabulary)
-                    text = prepared.formatted if prepared else _layout(cached, vocabulary)
+                prepared = _prepare_list(raw, vocabulary) if isinstance(cached, str) else None
+                source = prepared.source if prepared else raw
+                if (SETTINGS.get('cleanup', True) and isinstance(cached, str)
+                        and cleanup_is_safe(source, cached, vocabulary)
+                        and (prepared is None or list_layout_is_safe(prepared, cached, vocabulary))):
+                    text = cached
                     timings['cleanup_cache_hit'] = True
         if text is None:
             text = refine(raw)
@@ -1746,20 +1865,24 @@ def refine(raw: str) -> str:
         return raw
     vocabulary = tuple(vocab_words())
     prepared = _prepare_list(raw, vocabulary)
-    if prepared is not None:
+    if prepared is not None and not _llm_ok:
         _last_cleanup_timing = {'outcome': 'local_list', 'request_ms': 0.0}
         return prepared.formatted
+    source = prepared.source if prepared else raw
+    fallback = prepared.formatted if prepared else _layout(raw, vocabulary)
     try:
-        cleaned = _chat(system_prompt(), raw, cleanup_budget=CLEANUP_TIMEOUT_S)
+        cleaned = _chat(system_prompt(), prepared.formatted if prepared else source,
+                        cleanup_budget=CLEANUP_TIMEOUT_S)
         # answer-detection guard: cleaning never grows text much; an LLM that
         # "responded" to the transcript does. Fall back to raw in that case.
-        if not cleanup_is_safe(raw, cleaned, vocabulary):
-            print("[warn] LLM answered instead of cleaning; using raw transcript.")
-            return _layout(raw, vocabulary)
-        return _layout(cleaned or raw, vocabulary)
+        if (not cleanup_is_safe(source, cleaned, vocabulary)
+                or (prepared is not None and not list_layout_is_safe(prepared, cleaned, vocabulary))):
+            print("[warn] LLM changed content or list boundaries; using safe fallback.")
+            return fallback
+        return cleaned
     except Exception as e:
         print(f"[warn] Ollama unavailable ({type(e).__name__}); using raw transcript.")
-        return _layout(raw, vocabulary)  # No model retry.
+        return fallback  # No model retry.
 
 
 def _claude(model, system, user, schema=None):
@@ -1950,7 +2073,7 @@ def _lab_failure_message(op, error):
 def lab_run(op, fn, *, suggestion=False):
     """Reserve the operation before starting its thread; discard stale completions."""
     with _lab_lock:
-        if _quitting or _lab["busy"]:
+        if _quitting or _lab["busy"] or _speech_changing:
             return False
         if suggestion and globals().get('_pending') is not None:
             _lab['error'] = 'Review or discard the current suggestion before writing another.'
@@ -2091,7 +2214,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261116-listen11"
+UI_VERSION = "20261116-listen13"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -2267,6 +2390,7 @@ class Api(ExperienceApi):
             preview.update(active=False, text='', draft_text='', draft_covered_chars=0, final_text='')
         with _mic_lock:
             recording_ready = _recording.is_set() and _mic_ready and _announced
+            speech_changing = _speech_changing
         with _data_lock:
             llm_ok = _llm_ok
             cleanup_warming = not _quitting and _cleanup_policy.is_warming(SETTINGS.get('local_model', OLLAMA_MODEL))
@@ -2276,25 +2400,31 @@ class Api(ExperienceApi):
                 "llm_ok": llm_ok, "cleanup_warming": cleanup_warming, "last_error": _last_error, "event": ev,
                 "retained_ver": _retained_ver,
                 "speech_runtime": speech, "speech_summary": _speech_description(speech),
+                "speech_model_switching": speech_changing,
                 "speech_retry_ready": _speech_retry_available(),
                 "preview": preview, "preview_now": time.perf_counter(), "preview_busy": _preview.in_flight(),
                 "pending_dictations": _jobs.unfinished_tasks,
                 "levels": list(_levels) if _recording.is_set() else []}
 
     def get_settings(self):
-        return dict(SETTINGS)
+        with _data_lock:
+            return dict(SETTINGS)
 
     def get_options(self):
+        with _data_lock:
+            selected = MODEL_SIZE
         return {"hotkey": HOTKEY_NAMES, "style": STYLE_NAMES, "target": TARGET_NAMES,
                 "judge": JUDGE_NAMES, "judge_model": JUDGE_MODEL_NAMES, "engine": ENGINE_NAMES,
-                "microphone": self.get_microphones(), "speech_model": MODEL_SIZE,
-                "speech_model_label": "Parakeet Unified English 0.6B (CPU; Q8_0)" if MODEL_SIZE == "parakeet-unified-en-0.6b" else f"faster-whisper {MODEL_SIZE}",
-                "speech_model_note": "English only. Vocabulary is kept for text cleanup; this speech model does not use vocabulary hints." if MODEL_SIZE == "parakeet-unified-en-0.6b" else ""}
+                "microphone": self.get_microphones(), "speech_model": selected,
+                "speech_models": cached_speech_models(),
+                "speech_model_label": speech_model_label(selected), "speech_model_note": speech_model_note(selected)}
 
     def set_setting(self, key, value):
-        global _llm_ok
+        global _llm_ok, _cleanup_warm_pending
         if not isinstance(key, str) or key not in SETTINGS or not valid_setting(key, value):
             return False
+        if key == 'speech_model':
+            return _set_speech_model(value)
         if key == "microphone":
             if _recording.is_set():
                 return False
@@ -2307,10 +2437,12 @@ class Api(ExperienceApi):
             if value not in inventory["models"]:
                 return False
         with _data_lock:
+            changed_model = key == 'local_model' and value != SETTINGS.get('local_model', OLLAMA_MODEL)
             updated = dict(SETTINGS, **{key: value})
             atomic_write_json(SETTINGS_FILE, updated)
-            if key == 'local_model' and value != SETTINGS.get('local_model', OLLAMA_MODEL):
+            if changed_model:
                 _llm_ok = False
+                _cleanup_warm_pending = value
             SETTINGS.update(updated)
         if key == "live_preview":
             _draft.retire()
@@ -2321,6 +2453,8 @@ class Api(ExperienceApi):
                     _preview.end()
         if key in ('live_preview', 'cleanup', 'style', 'local_model', 'vocab'):
             _draft_input()
+        if changed_model or (key == 'cleanup' and value):
+            _schedule_pending_cleanup_warm()
         return True
 
     # ---- history & stats ----
@@ -2653,7 +2787,7 @@ class Api(ExperienceApi):
 
     def paste_draft(self, text):
         global _pending_pastes
-        if _quitting:
+        if _quitting or _speech_changing:
             return False
         if not isinstance(text, str) or not text.strip():
             return False
@@ -2666,7 +2800,7 @@ class Api(ExperienceApi):
         self.lab_kept()
         generation = _recovery_generation
         with _mic_lock:
-            if _quitting:
+            if _quitting or _speech_changing:
                 return False
             _pending_pastes += 1
         def send():
@@ -2731,6 +2865,8 @@ def bump_favorite(name):
 
 
 def _quit_work_message():
+    if _speech_changing:
+        return 'Speech model is changing. Wait for it to finish before quitting.'
     if _recording.is_set():
         return 'Use Finish or Cancel to end recording before quitting.'
     if _lab['busy']:
@@ -3000,12 +3136,7 @@ def _initialize_runtime():
         with _mic_lock:
             if _quitting:
                 return
-            if not _worker_started:
-                threading.Thread(target=worker, daemon=True).start()
-                _worker_started = True
-            if _listener is None or not _listener.is_alive():
-                _listener = _create_keyboard_listener()
-                _listener.start()
+            _ensure_speech_services()
             _state = "idle"
         print("Ready. Hold the hotkey to dictate.")
         _chime("ready")

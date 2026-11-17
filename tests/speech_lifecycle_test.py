@@ -99,16 +99,17 @@ with patch.object(d, 'SpeechProcessRuntime', Runtime), \
 
     # Interrupt at both startup publication boundaries. Quit either owns the
     # published runtime/services, or the initializer must reject its late work.
-    for statement in ('model = candidate', 'if not _worker_started:'):
+    for target, statement in ((d._initialize_runtime, 'model = candidate'),
+                              (d._ensure_speech_services, 'if not _worker_started:')):
         reset(); d.model = None; d._worker_started = False; d._listener = None
         candidate = Runtime()
         reached, resume, saved = threading.Event(), threading.Event(), threading.Event()
         failures, quit_result, service_order = [], [], []
-        lines, first_line = inspect.getsourcelines(d._initialize_runtime)
+        lines, first_line = inspect.getsourcelines(target)
         boundary = next(first_line + index for index, line in enumerate(lines)
                         if line.strip() == statement)
         def trace(frame, event, argument):
-            if frame.f_code is d._initialize_runtime.__code__ and event == 'line' and frame.f_lineno == boundary:
+            if frame.f_code is target.__code__ and event == 'line' and frame.f_lineno == boundary:
                 reached.set()
                 assert resume.wait(2)
             return trace

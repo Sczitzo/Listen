@@ -46,7 +46,7 @@ function saveContext(bridge){
   vm.runInContext(cut('// ---------- keyboard ----------','// ---------- polling ----------'),c);
   const fire=props=>{const ev={key:'Enter',defaultPrevented:false,preventDefault(){this.defaultPrevented=true},...props};local.keydown(ev);global.keydown(ev)};
   fire({ctrlKey:true});assert.equal(submits,0,'Ctrl+Enter also started Write suggestion');assert.equal(pastes,1);
-  for(const props of [{isComposing:true},{altKey:true},{metaKey:true},{shiftKey:true},{ctrlKey:true,shiftKey:true},{ctrlKey:true,altKey:true},{ctrlKey:true,metaKey:true}])fire(props);
+   for(const props of [{isComposing:true},{keyCode:229},{keyCode:229,ctrlKey:true},{altKey:true},{metaKey:true},{shiftKey:true},{ctrlKey:true,shiftKey:true},{ctrlKey:true,altKey:true},{ctrlKey:true,metaKey:true}])fire(props);
   assert.equal(submits,0,'composition or a modified Enter started a rewrite');assert.equal(pastes,1);
   global.keydown({key:'Enter',ctrlKey:true,preventDefault(){}});assert.equal(pastes,2,'Draft shortcut did not attempt Paste');assert.equal(submits,0);
   fire({});assert.equal(submits,1,'plain Enter did not write a suggestion');
