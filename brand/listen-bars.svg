@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256" role="img" aria-label="Listen">
+  <rect x="9" y="24" width="7" height="16" rx="3.5" fill="#F0EDE8" fill-opacity="0.5"/>
+  <rect x="19" y="17" width="7" height="30" rx="3.5" fill="#F0EDE8" fill-opacity="0.8"/>
+  <rect x="28.5" y="10" width="7" height="44" rx="3.5" fill="#5B8CFF"/>
+  <rect x="38" y="19" width="7" height="26" rx="3.5" fill="#F0EDE8" fill-opacity="0.8"/>
+  <rect x="48" y="25" width="7" height="14" rx="3.5" fill="#F0EDE8" fill-opacity="0.5"/>
+</svg>
