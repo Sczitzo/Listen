@@ -3,7 +3,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const OPTS = { hotkey: { "Right Ctrl": "ctrl_r", "Right Shift": "shift_r", "Right Alt": "alt_r", "Pause": "pause", "Scroll Lock": "scroll_lock" }, style: { "Tighten rambles": "tighten", "Clean only": "clean" }, target: { "Claude Code": "claude_code", "General AI": "general" }, judge: { "Claude (API)": "anthropic", "Local model": "local" }, judge_model: { "Haiku 5.5 · budget": "claude-haiku-5-5", "Sonnet 5.5 · deeper critique": "claude-sonnet-5-5" }, engine: { "Claude (API)": "anthropic", "Local model": "local" } };
+const OPTS = { hotkey: { "Right Ctrl": "ctrl_r", "Right Shift": "shift_r", "Right Alt": "alt_r", "Pause": "pause", "Scroll Lock": "scroll_lock" }, style: { "Tighten rambles": "tighten", "Clean only": "clean" }, target: { "Claude Code": "claude_code", "General AI": "general" }, judge: { "Claude (API)": "anthropic", "Local model": "local" }, judge_model: { "Haiku 5.5 · budget": "claude-haiku-5-5", "Sonnet 5.5 · deeper critique": "claude-sonnet-5-5", "Opus 5.5 · detailed review": "claude-opus-5-5" }, engine: { "Claude (API)": "anthropic", "Local model": "local" } };
 
 // ---------- bridge (pywebview) with a browser-only mock for design work ----------
 const mock = {
@@ -35,18 +35,90 @@ mock._archives=[];mock._favorites=[{name:"Demo review",text:"Review this synthet
 mock._settings.judge_model="claude-haiku-5-5";
 mock._settings.live_preview=true;
 mock.get_settings=async()=>({...mock._settings});mock.set_setting=async(k,v)=>{mock._settings[k]=v;return true;};
-mock.set_text=async(text,id)=>{if(id!==mock._lab.draft_id)return false;mock._lab.text=text;if(mock._lab.pending)mock._lab.pending.stale=true;mock._s.lab_ver++;return true;};
+mock.set_text=async(text,id)=>{
+  const current=mock._lab;
+  if(id!==current.draft_id)return false;
+  if(text!==current.text){
+    current.text=text;
+    if(current.score)current.stale=true;
+    if(current.pending)current.pending.stale=true;
+    if(current.cur<0 && text.trim()){current.revs.push({i:0,kind:"typed",score:null});current.cur=0;}
+    mock._s.lab_ver++;
+  }
+  return true;
+};
 mock.set_composer=async(text,id)=>{if(id!==mock._lab.draft_id)return false;mock._lab.composer=text;return true;};
 mock.get_local_models=async()=>({models:["qwen2.5:7b"],selected:mock._settings.local_model,error:""});
 mock.list_drafts=async()=>mock._archives.map(r=>({id:r.draft_id,title:r.text.slice(0,50)||"Empty draft"}));
 mock.new_draft=async()=>{mock._archives.push(structuredClone(mock._lab));Object.assign(mock._lab,{draft_id:"demo-"+Date.now(),workspace_id:"demo-"+Date.now(),text:"",composer:"",pending:null,revs:[],cur:-1,score:null});mock._s.lab_ver++;return true;};
 mock.restore_draft=async id=>{const i=mock._archives.findIndex(r=>r.draft_id===id);if(i<0)return false;const next=mock._archives.splice(i,1)[0];mock._archives.push(structuredClone(mock._lab));mock._lab=next;mock._s.lab_ver++;return true;};
+const demoAssessment=mock._lab.score;
+function putDemoCandidate(kind,text){
+  const version={text,by:"Synthetic demo model",cost:0,score:null,based_on:null};
+  mock._lab.pending={...version,id:"candidate-"+Date.now(),kind,source_text:mock._lab.text,stale:false,versions:[version]};
+}
 const demoCandidate=async(kind,text)=>{
   if(mock._lab.pending || mock._lab.busy)return false;
-  return mock._op("generating",600,()=>{if(!mock._lab.pending)mock._lab.pending={id:"candidate-"+Date.now(),text:text||mock._lab.text+"\n\nVerify the result with a focused check.",kind,by:"Synthetic demo model",source_text:mock._lab.text,stale:false};});
+  const {draft_id, text:original}=mock._lab;
+  return mock._op("generating",600,()=>{
+    if(!mock._lab.pending && draft_id===mock._lab.draft_id && original===mock._lab.text)
+      putDemoCandidate(kind,text||original+"\n\nVerify the result with a focused check.");
+  });
 };
 mock.improve=()=>demoCandidate("improve");mock.rebuild=()=>demoCandidate("rebuild");mock.submit=text=>demoCandidate("refine",mock._lab.text+"\n\nInstruction: "+text);
-mock.apply_candidate=async id=>{const p=mock._lab.pending;if(!p||p.id!==id||p.stale||p.source_text!==mock._lab.text)return false;mock._lab.text=p.text;mock._lab.revs.push({i:mock._lab.revs.length,kind:p.kind,by:p.by,score:null});mock._lab.cur=mock._lab.revs.length-1;mock._lab.by=p.by;mock._lab.score=null;mock._lab.pending=null;mock._s.lab_ver++;return true;};
+mock.feedback=async(id,text)=>{
+  if(mock._lab.busy || id!==mock._lab.draft_id || text!==mock._lab.text || !text.trim())return false;
+  const request="feedback-"+Date.now(), improved=text+"\n\nVerify the result with a focused check.";
+  mock._op("scoring",600,()=>{
+    if(id!==mock._lab.draft_id || text!==mock._lab.text)return;
+    mock._lab.score={...demoAssessment,improved,feedback_id:request,by:"Synthetic demo model",cost:0};
+    mock._lab.stale=false;
+    if(!mock._lab.pending)putDemoCandidate("improve",improved);
+  });
+  return request;
+};
+mock.draft_pass=async(id,text,refine)=>{
+  if(mock._lab.busy || id!==mock._lab.draft_id || text!==mock._lab.text || !text.trim())return false;
+  const request="draft-pass-"+Date.now();
+  mock._op(refine ? "refining" : "engineering",600,()=>{
+    if(id!==mock._lab.draft_id || text!==mock._lab.text)return;
+    const held=refine && mock._lab.score?.score>=9;
+    if(!held){
+      const grade=refine ? Math.min(9,(mock._lab.score?.score||7)+1) : 7;
+      mock._lab.text=text+(refine ? "\n\nInclude a clear success check." : "\n\nUse the request above as the brief. Follow its constraints.");
+      mock._lab.draft_id="demo-"+request;
+      mock._lab.score={...demoAssessment,score:grade,improved:"",by:"Synthetic demo model",cost:0};
+      mock._lab.stale=false;
+      mock._lab.cur=mock._lab.revs.length;
+      mock._lab.revs.push({i:mock._lab.cur,score:grade,kind:refine ? "refine" : "engineer",by:"Synthetic demo model",stale:false});
+    }
+    mock._lab.draft_pass={id:request,source_id:id,draft_id:mock._lab.draft_id,message:held ? "No meaningful improvement this pass. Your draft and score are unchanged." : "Draft updated."};
+  });
+  return request;
+};
+mock.review_candidate=async(id,index)=>{
+  const pending=mock._lab.pending, version=pending?.versions[index];
+  if(mock._lab.busy || pending?.id!==id || pending.stale || !version)return false;
+  return mock._op("reviewing",600,()=>{
+    if(mock._lab.pending!==pending || pending.stale)return;
+    const check="Include the result of the check.";
+    const improved=version.text.includes(check) ? version.text : version.text+"\n"+check;
+    version.score={...demoAssessment,score:9,gaps:improved===version.text?[]:["Spell out what to report after verification."],improved,by:version.by,cost:0};
+    if(improved!==version.text){
+      pending.versions.push({text:improved,by:version.by,cost:0,score:null,based_on:index,basis_score:version.score});
+      pending.text=improved;
+    }
+  });
+};
+mock.apply_candidate=async (id,index)=>{
+  const p=mock._lab.pending,version=index===undefined?p?.versions.at(-1):p?.versions[index];
+  if(!p||p.id!==id||p.stale||p.source_text!==mock._lab.text||!version||mock._lab.busy==="reviewing")return false;
+  mock._lab.text=version.text;
+  mock._lab.revs.push({i:mock._lab.revs.length,kind:p.kind,by:version.by,score:version.score?.score??null});
+  Object.assign(mock._lab,{cur:mock._lab.revs.length-1,by:version.by,score:version.score,stale:false,pending:null});
+  mock._s.lab_ver++;
+  return true;
+};
 mock.discard_candidate=async id=>{if(mock._lab.pending?.id!==id)return false;mock._lab.pending=null;mock._s.lab_ver++;return true;};
 mock.get_favorites=async()=>mock._favorites;mock.save_favorite_checked=async(name,text,replace=false)=>{const old=mock._favorites.find(f=>f.name===name);if(old&&!replace)return {status:"conflict"};if(old)old.text=text;else mock._favorites.push({name,text,uses:0});return {status:"saved"};};
 mock.remove_favorite=async name=>{const i=mock._favorites.findIndex(f=>f.name===name);if(i<0)return null;const token="undo-"+Date.now();mock._undo[token]=mock._favorites.splice(i,1)[0];return token;};
@@ -73,7 +145,10 @@ function stableHTML(el, html) { if (htmlCache.get(el) !== html) { el.innerHTML =
 
 // ---------- state ----------
 let S = {}, settings = {}, options = {}, lab = { revs: [], text: "" }, favs = [];
-let lastLabVer = -1, lastHistLen = -1, page = "dictate", editing = false, lastBusy = "";
+let lastLabVer = -1, lastHistLen = -1, page = "dictate", editing = false;
+let feedbackRequest;
+const feedbackIssues = new Map();
+let labClearVersion = 0;
 
 // ---------- live preview ----------
 let previewUiEpoch = 0, previewLastVersion = -1, previewActionPending = 0, previewSettingVersion = 0;
@@ -134,14 +209,17 @@ function askConfirm(message) {
 // ---------- pages ----------
 function show(p, focus = true) {
   for (const panel of $$(".lab-popover:popover-open")) panel.hidePopover();
-  if (page !== p) $(".main").scrollTop = 0;
+  if (page !== p) {
+    $(".main").scrollTop = 0;
+    if (feedbackRequest) feedbackRequest.leftLab = true;
+  }
   page = p;
   $$(".page").forEach(el => el.classList.toggle("active", el.dataset.page === p));
   $$(".rail-btn").forEach(b => { const on = b.dataset.page === p; b.classList.toggle("active", on); if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
   closeMore(false);
   if (p === "history") loadHistory();
   if (p === "settings") renderSettings();
-  if (focus) (p === "lab" ? (lab.text ? $("#composer") : $("#draft")) : $(`.page[data-page="${p}"] h1`))?.focus();
+  if (focus) (p === "lab" ? $("#draft") : $(`.page[data-page="${p}"] h1`))?.focus();
 }
 $$(".rail-btn").forEach(b => b.onclick = () => show(b.dataset.page));
 $$("[data-goto]").forEach(b => b.onclick = () => show(b.dataset.goto));
@@ -244,7 +322,7 @@ const SETTING_ROWS = [
   ["local_model", "AI text model (Ollama)", "Shared by text cleanup and local Prompt Lab writing and scoring. Speech recognition uses the separate model above.", "model"],
   ["target", "Prompt target", "Shapes how prompts are structured"], ["engine", "Engineer with", "Writes and refines prompts with Claude via API, or your selected local model"],
   ["judge", "Judge with", "Scores revisions against current guidance and writes the improved version"],
-  ["judge_model", "Cloud judge model", "Haiku is the budget default; Sonnet offers deeper critique. Applies when Claude and cloud processing are enabled."],
+  ["judge_model", "Cloud judge model", "Haiku is the budget choice. Sonnet balances speed and detail. Opus has higher rates. Applies when Claude and cloud processing are enabled."],
   ["cloud_enabled", "Allow cloud processing", "Sends Prompt Lab and voice-triggered prompt engineering text and relevant preferences to the selected API provider. Ordinary dictation cleanup stays local. Multiple paid calls may be made.", "toggle"],
 ];
 let speechModelSavePending=false, speechOptionsVersion=0;
@@ -420,7 +498,7 @@ $("#hist-search").oninput = () => { clearTimeout(histTimer); histTimer = setTime
 async function clearPrivate(scope) {
   const descriptions = {history:"dictation history",workspace:"current and archived recovery drafts, instructions and pending suggestions",learned:"learned preferences",logs:"application logs"};
   if (!await askConfirm(`Clear ${descriptions[scope]}? Favorites and cost accounting remain. Older recovery backups may remain. This cannot be undone.`)) return;
-  try { const result=await api().clear_private_data(scope,"DELETE"); if(scope==="history"||scope==="workspace")invalidatePreview(result.preview_version); toast(result.message || (result.ok ? "Cleared" : "Could not clear"),!result.ok); if(result.ok) { if(scope==="history") { loadHistory();loadRecent(); } if(scope==="workspace") { editorDirty=false;composerDirty=false;await loadLab(); } if(scope==="learned") renderLearned(); } } catch { toast("Clear was not confirmed. Reconnect and inspect before trying again.",true); }
+  try { const result=await api().clear_private_data(scope,"DELETE"); if(scope==="history"||scope==="workspace")invalidatePreview(result.preview_version); toast(result.message || (result.ok ? "Cleared" : "Could not clear"),!result.ok); if(result.ok) { if(scope==="history") { loadHistory();loadRecent(); } if(scope==="workspace") { labClearVersion++;feedbackRequest=null;feedbackIssues.clear();editorDirty=false;composerDirty=false;await loadLab(); } if(scope==="learned") renderLearned(); } } catch { toast("Clear was not confirmed. Reconnect and inspect before trying again.",true); }
 }
 $("#btn-clear-history").onclick = () => clearPrivate("history");
 $$("[data-clear]").forEach(b=>b.onclick=()=>clearPrivate(b.dataset.clear));
@@ -438,22 +516,33 @@ ed.addEventListener("focus", () => editing = true);
 ed.addEventListener("blur", () => { editing = false; flushEdit(); });
 let composerTimer, composerVersion=0, composerDirty=false;
 let editTimer, editVersion = 0, labRequest = 0, editorContext, editorDirty = false;
+let publishingDraft = false;
 ed.addEventListener("input", () => {
   editing = true; editorDirty = true; editVersion++; clearTimeout(editTimer);
+  renderLabActivity();
   const text = ed.value, context = editorContext, version = editVersion;
   editTimer = setTimeout(() => saveEdit(text, context, version), 300);
 });
 const KIND = { typed: "typed", engineer: "engineered", refine: "refined", improve: "improved", rebuild: "rebuilt", favorite: "favorite" };
 
-async function loadLab() {
+async function loadLab(checkOnly = false) {
+  if (publishingDraft) return false;
   const request = ++labRequest, version = editVersion, instructionVersion = composerVersion;
-  const next = await api().get_lab();
-  if (request !== labRequest || version !== editVersion || instructionVersion !== composerVersion) return request !== labRequest;  // false = owner typed mid-load: poll retries
+  const superseded = () => request !== labRequest || version !== editVersion || instructionVersion !== composerVersion;
+  let next = await api().get_lab();
+  if (superseded() || publishingDraft) return false;
+  if (!checkOnly && !next.busy && next.prepared_pass && !editorDirty && !composerDirty && !ed.readOnly && !composer.readOnly
+      && next.draft_id === editorContext && draftMatches(next.text)) {
+    publishingDraft = ed.readOnly = composer.readOnly = true;
+    try { next = await api().finish_draft_pass(next.draft_id, next.prepared_pass); }
+    finally { publishingDraft = ed.readOnly = composer.readOnly = false; }
+    if (superseded()) return false;
+  }
   if (next.draft_id !== editorContext && (editorDirty || composerDirty)) {
-    if (!api().retain_editor) return;
-    if (editorDirty && !await api().retain_editor(ed.value)) return;
-    if (composerDirty && !await api().retain_editor("Unsent instruction:\n" + composer.value)) return;
-    if (request !== labRequest || version !== editVersion || instructionVersion !== composerVersion) return request !== labRequest;
+    if (!api().retain_editor) return false;
+    if (editorDirty && !await api().retain_editor(ed.value)) return false;
+    if (composerDirty && !await api().retain_editor("Unsent instruction:\n" + composer.value)) return false;
+    if (superseded()) return false;
     editorDirty = false; composerDirty = false;
     recovery("Unsaved work was kept in recovery before switching drafts.");
   }
@@ -462,11 +551,12 @@ async function loadLab() {
   composerVersion = Math.max(composerVersion, Number(next.composer_edit_id) || 0);
   if (!editorDirty || next.draft_id !== editorContext) {
     setDisplayedProperty(ed, "value", lab.text || "");
+    if (next.draft_id !== editorContext) ed.scrollTop = 0;
     editorContext = lab.draft_id;
   }
   if (!composerDirty) setDisplayedProperty(composer, "value", lab.composer || "");
   recovery(editorDirty || composerDirty ? "Unsaved changes" : lab.save_error ? "Recovery could not be saved: " + lab.save_error : lab.saved ? "Saved locally" : "Recovery not yet saved");
-  renderLabActivity(); renderCandidate(); loadArchives();
+  renderCandidate(); loadArchives();
   ed.classList.toggle("busy", !!lab.busy);
   // meta line
   $("#lab-cost").textContent = lab.session_cost ? `Estimated session $${lab.session_cost.toFixed(3)}` : "";
@@ -494,7 +584,6 @@ async function loadLab() {
   const sb = $("#scorebar"), sc = lab.score;
   if (sc) {
     sb.classList.remove("hidden");
-    const b = $("#score-badge"); b.textContent = `Model assessment ${sc.score} / 10${lab.stale ? " · edited" : ""}`; b.className = "score-badge " + (lab.stale ? "" : sc.score >= 8 ? "good" : sc.score >= 5 ? "" : "bad");
     const p = $("#score-prev");
     if (lab.prev_score == null) { p.textContent = ""; p.className = "score-prev muted"; }
     else { const d = sc.score - lab.prev_score; p.textContent = d === 0 ? `same as v${prevIdx() + 1}` : `${d > 0 ? "▲" : "▼"} ${Math.abs(d)} vs v${prevIdx() + 1} (${lab.prev_score})`; p.className = "score-prev " + (d > 0 ? "up" : d < 0 ? "down" : "muted"); }
@@ -502,44 +591,52 @@ async function loadLab() {
   } else sb.classList.add("hidden");
   // buttons
   const has = !!(lab.text || "").trim(), busy = !!lab.busy;
-  $("#btn-improve").disabled = !has || busy; $("#btn-score").disabled = !has || busy; $("#btn-rebuild").disabled = !has || busy;
-  $("#btn-send").disabled = busy || sending; composer.disabled = false;
+  const completed = feedbackRequest?.id && !busy && !next.prepared_pass ? feedbackRequest : null;
+  const displayedResult = completed && completed.workspace === lab.workspace_id && labResultId(completed.action) === completed.id;
+  if (completed) {
+    feedbackRequest = null;
+    if (!displayedResult && (completed.context !== editorContext || completed.edit !== editVersion)) {
+      const reason = completed.context === editorContext ? "you edited the draft" : "you switched drafts or revisions";
+      const work = completed.action === "feedback" ? "Feedback" : `${completed.action} result`;
+      if (!feedbackIssues.get(lab.workspace_id)?.uncertain) feedbackIssues.set(lab.workspace_id, {message:`${work} for ${completed.label} is unavailable after ${reason}.`});
+    }
+  }
+  $("#btn-improve").disabled = !has || busy; $("#btn-rebuild").disabled = !has || busy;
+  composer.disabled = false;
   composer.placeholder = has ? "Describe what you want to change." : "Describe the prompt you want to write.";
-  $("#lab-action-error").textContent=lab.error || ""; $("#lab-action-error").classList.toggle("hidden",!lab.error);
-  if (lab.error && lab.error !== lastLabErr) { lastLabErr = lab.error; toast(lab.error, !/already as strong/.test(lab.error)); }
-  if ($("#drawer").open) renderDrawer();
+  const fieldError = lab.error_op ? "" : lab.error || "";
+  setDisplayedProperty($("#lab-action-error"), "textContent", fieldError); $("#lab-action-error").classList.toggle("hidden", !fieldError);
+  if (fieldError && fieldError !== lastLabErr && !reviewDialog.open) toast(fieldError, !/already as strong/.test(fieldError));
+  lastLabErr = lab.error;
+  renderLabActivity();
+  if (displayedResult && completed.action === "Engineer" && !completed.leftLab && page === "lab" && document.activeElement === $("#btn-draft-pass")) {
+    $("#btn-copy").focus({preventScroll:true});
+  }
+  if (displayedResult && completed.action === "feedback" && currentFeedbackIntent(completed)
+      && document.activeElement === $("#btn-score")
+      && !$("dialog[open], :popover-open") && moreMenu.classList.contains("hidden")) {
+    openReview(lab.pending && !lab.pending.stale ? lab.pending : null, $("#btn-score"));
+  }
+  return checkOnly || !next.prepared_pass;
 }
 let lastLabErr = "";
 function prevIdx() { for (let i = lab.cur - 1; i >= 0; i--) if (lab.revs[i].score != null) return i; return -1; }
-function renderDrawer() {
-  const sc = lab.score; if (!sc) return;
-
-  $("#drawer-score").textContent = sc.score;
-  $("#drawer-meta").textContent = `${sc.by}${sc.cost ? ` · $${sc.cost.toFixed(3)}` : ""}${sc.note ? "\n" + sc.note : ""}`;
-  $("#drawer-criteria").innerHTML = Object.entries(sc.criteria).map(([k, v]) => `<div><span>${esc(k.replace("_", " "))}</span><b>${Number(v)}/5</b></div>`).join("");
-  $("#drawer-gaps").innerHTML = sc.gaps.map(g => `<li>${esc(g)}</li>`).join("") || "<li>No gaps found.</li>";
-  $("#drawer-history").innerHTML = lab.revs.filter(r => r.score != null).map(r => `<span${r.i === lab.cur ? ' style="color:var(--fg);border-color:var(--accent)"' : ""}>v${Number(r.i) + 1} · ${Number(r.score)}</span>`).join("") || "<span>no scores yet</span>";
-}
-let drawerOpener; function openDrawer() { if(!lab.score) return; drawerOpener=document.activeElement; renderDrawer(); $("#drawer").showModal(); }
-$("#drawer").addEventListener("close",()=>drawerOpener?.focus());
-$("#score-details").onclick = openDrawer;
-$("#drawer-close").onclick = () => $("#drawer").close();
 async function saveEdit(text, context, version) {
   recovery("Saving locally…");
   try { const saved=await api().set_text(text,context,version); if(version===editVersion && context===editorContext) { if(saved) editorDirty=false; recovery(saved ? "Saved locally" : "Draft not saved. Your text remains here; try again before continuing."); } return saved; }
-  catch { recovery("Save not confirmed. Your text remains here; reconnect before continuing."); return false; }
+  catch { if (version === editVersion && context === editorContext) recovery("Save not confirmed. Your text remains here; reconnect before continuing."); return false; }
 }
 async function flushEdit() { clearTimeout(editTimer); return !editorDirty || await saveEdit(ed.value,editorContext,editVersion); }
 async function saveComposer(text,context,version) {
   recovery("Saving instruction…");
   try { const ok=await api().set_composer(text,context,version); if(version===composerVersion && context===editorContext) { if(ok) composerDirty=false; recovery(ok ? "Saved locally" : "Instruction not saved. Your input remains here."); } return ok; }
-  catch { recovery("Instruction save not confirmed. Your input remains here."); return false; }
+  catch { if (version === composerVersion && context === editorContext) recovery("Instruction save not confirmed. Your input remains here."); return false; }
 }
 composer.addEventListener("input",()=> { composerDirty=true;composerVersion++;clearTimeout(composerTimer);const text=composer.value,context=editorContext,version=composerVersion; recovery("Unsaved instruction");composerTimer=setTimeout(()=>saveComposer(text,context,version),350); });
 async function flushAll() { clearTimeout(composerTimer); if(!await flushEdit()) return false; return !composerDirty || await saveComposer(composer.value,editorContext,composerVersion); }
 let quitPending = false;
 window.requestDictationQuit = async () => {
-  if (quitPending) return;
+  if (quitPending || publishingDraft) return;
   if (vocabAdding) { toast("Vocabulary is still being updated. Wait for it to finish, then choose Quit again.", true); return; }
   quitPending = true;
   const fields = [ed, composer, vocab], readOnly = fields.map(el => el.readOnly);
@@ -597,14 +694,106 @@ moreMenu.addEventListener("click", ev => {
   if (button && button.id !== "btn-delete-draft") closeMore(true);
 });
 document.addEventListener("click", ev => { if (!ev.target.closest(".more-actions, dialog")) closeMore(false); });
-for(const [id,method] of [["improve","improve"],["score","score"],["rebuild","rebuild"]]) $("#btn-"+id).onclick=async()=> {
-  if(method!=="score" && suggestionWaiting())return;
+for(const [id,method] of [["improve","improve"],["rebuild","rebuild"]]) $("#btn-"+id).onclick=async()=> {
+  if(suggestionWaiting())return;
   if(!await flushAll())return;
-  if(method!=="score" && suggestionWaiting())return;
+  if(suggestionWaiting())return;
   try { if(!await api()[method]()) toast("Action not started. Check processing choice or wait for current work.",true); }
   catch { toast("Result not confirmed. Check the draft before explicitly trying again.",true); }
 };
+function currentFeedbackIntent(request) {
+  return !request.leftLab && page === "lab" && request.context === editorContext
+    && request.edit === editVersion && request.instruction === composerVersion;
+}
+function feedbackDraftLabel() {
+  const title = ed.value.trim().split("\n", 1)[0];
+  return title ? `“${title.length > 44 ? title.slice(0, 43) + "…" : title}”` : "the current draft";
+}
+function rememberUnconfirmedRequest(request, work) {
+  if (request.clearVersion !== labClearVersion) return;
+  feedbackIssues.set(request.workspace, {...request, uncertain:true,
+    message:`${work} was not confirmed for ${request.label}. Check for a result before trying again.`});
+  const workspace = lab.workspace_id;
+  if (workspace !== request.workspace && !feedbackIssues.get(workspace)?.uncertain) {
+    feedbackIssues.set(workspace, {switched:true, attention:true,
+      message:`The request for ${request.label} was not confirmed after you switched drafts.`});
+  }
+}
+async function requestLab(action) {
+  const workspace = lab.workspace_id, issue = feedbackIssues.get(workspace);
+  if (feedbackRequest || sending || lab.busy || lab.prepared_pass || !ed.value.trim() || issue?.checking || (issue?.uncertain && !issue.checked)) return;
+  if (action !== "feedback" && lab.pending) {
+    if (!issue?.uncertain) feedbackIssues.set(workspace, {waiting:true, message:"Open Compare suggestion to review or discard the earlier suggestion before continuing."});
+    renderLabActivity();
+    return;
+  }
+  const request = {action, workspace, context: editorContext, revision: Math.max(0, lab.cur), edit: editVersion, instruction: composerVersion, clearVersion: labClearVersion,
+    label: feedbackDraftLabel(), previous: labResultId(action)};
+  const work = action === "feedback" ? "Feedback" : action;
+  feedbackRequest = request;
+  renderLabActivity();
+  try {
+    if (!await flushAll() || !currentFeedbackIntent(request)) return;
+    try {
+      request.id = action === "feedback" ? await api().feedback(request.context, ed.value)
+        : await api().draft_pass(request.context, ed.value, action === "Refine");
+    } catch {
+      rememberUnconfirmedRequest(request, work);
+      return;
+    }
+    if (!request.id) {
+      if (!issue?.uncertain) feedbackIssues.set(workspace, {message:`${work} could not start for ${request.label}. Check your draft and try again.`, attention:true});
+      return;
+    }
+    feedbackIssues.delete(workspace);
+    await loadLab().catch(() => false); // Polling retries a failed refresh.
+  } finally {
+    if (!request.id && feedbackRequest === request) {
+      feedbackRequest = null;
+      renderLabActivity();
+    }
+  }
+}
+$("#btn-score").onclick = () => requestLab("feedback");
+$("#btn-draft-pass").onclick = () => requestLab(draftGrade() ? "Refine" : "Engineer");
+$("#btn-check-feedback").onclick = async () => {
+  const workspace = lab.workspace_id, issue = feedbackIssues.get(workspace);
+  if (!issue?.uncertain || issue.checking || feedbackRequest || lab.busy || sending) return;
+  issue.checking = true;
+  renderLabActivity();
+  try {
+    if (!await loadLab(true) || lab.workspace_id !== workspace || lab.busy || lab.prepared_pass || feedbackIssues.get(workspace) !== issue) return;
+    const pass = issue.action === "Engineer" || issue.action === "Refine";
+    const result = labResultId(issue.action);
+    const found = result && result !== issue.previous && (issue.action === "Write suggestion" ? !lab.pending.stale
+      : draftGrade() && (!pass || lab.draft_pass?.source_id === issue.context));
+    if (Math.max(0, lab.cur) !== issue.revision && !(pass && found)) {
+      issue.message = `Open v${issue.revision + 1} of ${issue.label} to check the result.`;
+      return;
+    }
+    issue.checked = true;
+    const work = issue.action === "feedback" ? "feedback" : "result";
+    issue.message = found ? "" : `No new ${work} found for ${issue.label}. You can check again or start a new request for the current draft.`;
+  } catch {
+    issue.checked = false;
+    issue.message = `The request for ${issue.label} is still unconfirmed. Reconnect and check again.`;
+  } finally {
+    issue.checking = false;
+    renderLabActivity();
+  }
+};
 let sending=false;
+function draftGrade() {
+  return !lab.stale && draftMatches(lab.text) ? lab.score : null;
+}
+function draftMatches(text) {
+  return ed.value === (text || "").replace(/\r\n?/g, "\n");
+}
+function labResultId(action) {
+  if (action === "feedback") return lab.score?.feedback_id;
+  if (action === "Write suggestion") return lab.pending?.id;
+  return lab.draft_pass?.draft_id === editorContext ? lab.draft_pass?.id : undefined;
+}
 function suggestionWaiting() {
   if(!lab.pending)return false;
   setDisplayedProperty($("#lab-action-error"), "textContent", "Open Compare suggestion to review it, then apply or discard it before requesting another.");
@@ -613,19 +802,52 @@ function suggestionWaiting() {
   return true;
 }
 function renderLabActivity() {
-  const message = lab.busy === "scoring" ? "Scoring draft…"
-    : lab.busy || sending ? "Writing suggestion…"
-    : lab.pending ? "Suggestion ready" : "";
-  setDisplayedProperty($("#lab-busy"), "textContent", message);
-  $("#lab-busy").dataset.ready = String(message === "Suggestion ready");
-  $("#btn-review").classList.toggle("hidden", !lab.pending);
+  const issue = feedbackIssues.get(lab.workspace_id), check = $("#btn-check-feedback");
+  const notice = !issue?.waiting || lab.pending ? issue?.message : "";
+  const grade = draftGrade(), ready = !!grade?.feedback_id;
+  const locked = !!lab.busy || !!lab.prepared_pass || sending || !!feedbackRequest;
+  const action = feedbackRequest?.action;
+  const passMessage = grade && lab.draft_pass?.draft_id === editorContext ? lab.draft_pass.message : "";
+  const message = action === "Engineer" ? `Engineering and scoring ${feedbackRequest.label}…`
+    : action === "Refine" ? `Refining and scoring ${feedbackRequest.label}…`
+    : feedbackRequest ? `Getting feedback for ${feedbackRequest.label}…`
+    : sending ? "Writing suggestion…"
+    : issue?.switched ? notice
+    : lab.busy === "scoring" ? "Getting feedback…"
+    : lab.busy === "reviewing" ? "Reviewing suggestion…"
+    : lab.busy === "refining" ? "Refining and scoring…"
+    : lab.busy ? "Writing suggestion…"
+    : issue?.checking ? `Checking for a result for ${issue.label}…`
+    : notice || (lab.error_op ? lab.error : "")
+      || passMessage || (ready ? `Feedback ready for ${feedbackDraftLabel()}.` : lab.pending ? "Suggestion ready" : "");
+  const status = $("#lab-busy");
+  setDisplayedProperty(status, "textContent", message);
+  status.dataset.ready = String(message === "Suggestion ready" || message.startsWith("Feedback ready"));
+  status.dataset.attention = String(!locked && !issue?.checking && !!(issue?.attention || (issue?.uncertain && !issue.checked) || (lab.error_op && lab.error)));
+  setDisplayedProperty($("#btn-score"), "disabled", !ed.value.trim());
+  const blocked = locked || !!issue?.checking || !!(issue?.uncertain && !issue.checked);
+  setDisplayedProperty($("#btn-score"), "ariaDisabled", String(blocked));
+  const pass = $("#btn-draft-pass"), badge = $("#score-badge"), copy = $("#btn-copy");
+  setDisplayedProperty(pass, "ariaDisabled", String(blocked || !ed.value.trim()));
+  setDisplayedProperty(pass, "textContent", grade ? "Refine" : "Engineer");
+  pass.classList.toggle("primary", !grade);
+  badge.classList.toggle("hidden", !grade);
+  setDisplayedProperty(badge, "textContent", grade ? `Score ${grade.score}/10` : "");
+  copy.classList.toggle("hidden", !grade);
+  setDisplayedProperty(copy, "ariaDisabled", String(locked));
+  setDisplayedProperty($("#btn-send"), "ariaDisabled", String(blocked));
+  check.classList.toggle("hidden", !issue?.uncertain);
+  setDisplayedProperty(check, "ariaDisabled", String(locked || !!issue?.checking));
+  $("#btn-review").classList.toggle("hidden", !lab.pending && !ready);
+  setDisplayedProperty($("#review-action-label"), "textContent", lab.pending ? "Compare suggestion" : "View feedback");
 }
 async function send() {
-  if(sending || lab.busy)return;
+  const workspace = lab.workspace_id, issue = feedbackIssues.get(workspace);
+  if (sending || lab.busy || lab.prepared_pass || feedbackRequest || issue?.checking || (issue?.uncertain && !issue.checked)) return;
   if(suggestionWaiting())return;
   const text=composer.value.trim(), version=composerVersion, context=editorContext;
   if(!text) { $("#lab-action-error").textContent="Describe what you want in Instruction, then choose Write suggestion."; $("#lab-action-error").classList.remove("hidden"); composer.focus(); return; }
-  sending=true;$("#btn-send").disabled=true;renderLabActivity();
+  sending=true;renderLabActivity();
   try {
     if(!await flushAll())return;
     if(suggestionWaiting())return;
@@ -633,57 +855,172 @@ async function send() {
       recovery("The draft or instruction changed. Nothing was sent; review your current work before sending.");
       return;
     }
-    if(!await api().submit(text,context)) { recovery("Instruction was not sent. Your input remains here.");return; }
-    recovery("Instruction accepted. It stays recoverable until a suggestion is ready.");
+    const action = "Write suggestion";
+    const request = {action, workspace, context, revision: Math.max(0, lab.cur), clearVersion: labClearVersion, label: feedbackDraftLabel(), previous: labResultId(action)};
+    try {
+      if (!await api().submit(text,context)) { if (context === editorContext) recovery("Instruction was not sent. Your input remains here."); return; }
+    } catch {
+      rememberUnconfirmedRequest(request, "Suggestion request");
+      return;
+    }
+    feedbackIssues.delete(workspace);
+    if (context === editorContext) recovery("Instruction accepted. It stays recoverable until a suggestion is ready.");
     await loadLab().catch(() => false); // Polling retries a failed refresh after submission.
-  } catch { recovery("Send not confirmed. Your instruction remains here. Check results before sending again."); }
-  finally {sending=false;$("#btn-send").disabled=!!lab.busy;renderLabActivity();}
+  } finally {sending=false;renderLabActivity();}
 }
 $("#btn-send").onclick=send;
 composer.addEventListener("keydown",ev=> { if(ev.key==="Enter"&&!ev.shiftKey&&!ev.ctrlKey&&!ev.altKey&&!ev.metaKey&&!ev.isComposing&&ev.keyCode!==229) {ev.preventDefault();send();} });
-$("#btn-copy").onclick=async()=> {if(!ed.value.trim()||!await flushAll())return;try {if(await api().copy_text(ed.value)) {api().lab_kept();toast("Copied");} else toast("Copy failed",true);}catch{toast("Copy not confirmed",true);} };
+$("#btn-copy").onclick=async()=> {
+  const text = ed.value, context = editorContext;
+  if (!text.trim() || feedbackRequest || lab.busy || sending || !await flushAll() || context !== editorContext || ed.value !== text) return;
+  try {
+    if (await api().copy_text(text)) { api().lab_kept(); toast("Copied draft."); }
+    else toast("Copy failed",true);
+  } catch { toast("Copy not confirmed",true); }
+};
 $("#btn-paste").onclick=async()=> {if(!ed.value.trim()||!await flushAll())return;try{await api().paste_draft(ed.value);}catch{toast("Paste not confirmed. Check your destination before trying again.",true);} };
-$("#btn-new").onclick=async()=> {if(!await flushAll())return;try{if(await api().new_draft()){editVersion++;await loadLab();$("#drawer").close();ed.focus();}else toast("Could not create a draft; your text remains.",true);}catch{toast("New draft not confirmed; your text remains.",true);} };
+$("#btn-new").onclick=async()=> {if(!await flushAll())return;try{if(await api().new_draft()){editVersion++;await loadLab();ed.focus();}else toast("Could not create a draft; your text remains.",true);}catch{toast("New draft not confirmed; your text remains.",true);} };
 function askFavoriteName() {const dialog=$("#favorite-name-dialog"),input=$("#favorite-name"),opener=document.activeElement;if(dialog.open)return Promise.resolve(null);input.value=lab.fav||"";dialog.returnValue="";return new Promise(resolve=>{dialog.addEventListener("close",()=>{opener?.focus();resolve(dialog.returnValue==="save"?input.value.trim():null);},{once:true});dialog.showModal();input.focus();});}
 $("#btn-save").onclick=async()=> {if(!ed.value.trim()||!await flushAll())return;const name=await askFavoriteName();if(!name)return;try {let result=await api().save_favorite_checked(name,ed.value,false);if(result.status==="conflict"&&await askConfirm(`Replace favorite “${name}”? Its existing text will be replaced. The previous version remains in archived recovery drafts.`))result=await api().save_favorite_checked(name,ed.value,true);if(result.status==="saved"){toast("Favorite saved");loadFavs();}else if(result.status==="error")toast("Favorite could not be saved",true);}catch{toast("Favorite save not confirmed. Inspect Library before trying again.",true);} };
 const reviewDialog = $("#candidate"), reviewButton = $("#btn-review");
-let reviewId, resolvingCandidate = false;
+let reviewId, reviewDraftId, reviewOpener, reviewVersion, reviewCount, showDraftFeedback, reviewingVersion;
+let resolvingCandidate = false, startingReview = false, candidateError = "";
 function renderCandidate() {
   if (!reviewDialog.open) return;
-  const pending = lab.pending;
-  if (pending?.id !== reviewId) { reviewDialog.close(); return; }
-  setDisplayedProperty($("#candidate-original"), "value", pending.source_text);
-  setDisplayedProperty($("#candidate-text"), "value", pending.text);
-  const stale = pending.stale || pending.source_text !== ed.value || editorDirty;
-  $("#btn-apply").disabled = stale || !!lab.busy || resolvingCandidate;
-  $("#btn-discard").disabled = resolvingCandidate;
-  $("#candidate-note").classList.toggle("hidden", !stale);
-  setDisplayedProperty($("#candidate-note"), "textContent", stale
-    ? "This suggestion is for an earlier draft. Discard it before requesting a new suggestion for your current draft." : "");
-  setDisplayedProperty($("#candidate-version"), "textContent", !stale && lab.cur >= 0 ? `Draft v${lab.cur + 1}` : "");
-  setDisplayedProperty($("#candidate-model"), "textContent", pending.by || "Selected model");
-}
-function reviewError(message) {
+  const pending = reviewId ? lab.pending : null;
+  if (reviewDraftId !== editorContext || (reviewId && pending?.id !== reviewId)) { reviewDialog.close(); return; }
+  const versions = pending?.versions || (pending ? [pending] : []);
+  const reviewing = startingReview || lab.busy === "reviewing";
+  if (!reviewing && versions.length > reviewCount) {
+    reviewCount = versions.length;
+    reviewVersion = reviewCount - 1;
+    showDraftFeedback = false;
+    $("#review-show-suggestion").checked = true;
+  }
+  const selected = versions[reviewVersion];
+  const stale = pending && (pending.stale || pending.source_text !== ed.value || editorDirty);
+  const actionLocked = !!lab.busy || startingReview || resolvingCandidate;
+  const draftLabel = `Draft v${lab.cur + 1}`;
+  const suggestionLabel = `Suggestion ${reviewVersion + 1}`;
+  reviewDialog.toggleAttribute("data-feedback-only", !selected);
+  setDisplayedProperty($("#candidate-title"), "textContent", selected ? "Compare suggestion" : "Draft feedback");
+  setDisplayedProperty($("#candidate-original"), "value", pending?.source_text ?? lab.text);
+  setDisplayedProperty($("#candidate-text"), "value", selected?.text ?? "");
+  setDisplayedProperty($("#candidate-label"), "textContent", suggestionLabel);
+  setDisplayedProperty($("#candidate-version"), "textContent", stale ? "Earlier draft" : draftLabel);
+  setDisplayedProperty($("#candidate-model"), "textContent", selected?.by || "");
+  $(".candidate-grid").classList.toggle("hidden", !selected && lab.stale);
+  $("#btn-apply").disabled = !selected || !!stale || actionLocked;
+  $("#btn-review-suggestion").disabled = !selected || !!stale || actionLocked;
+  $("#btn-discard").disabled = resolvingCandidate || reviewing;
+  const note = stale ? "This suggestion is for an earlier draft. Discard it before requesting a new suggestion for your current draft."
+    : !selected && lab.pending?.stale ? "An earlier suggestion is still available under Compare suggestion."
+    : !selected && !lab.stale ? "This feedback came without a new suggestion." : "";
+  $("#candidate-note").classList.toggle("hidden", !note);
+  setDisplayedProperty($("#candidate-note"), "textContent", note);
+
+  const rewrite = selected?.score?.improved.trim();
+  setDisplayedProperty($("#candidate-status"), "textContent", reviewing
+    ? (reviewingVersion === undefined ? "Reviewing suggestion…" : `Reviewing Suggestion ${reviewingVersion + 1}…`)
+    : selected && !stale && !selected.score ? `${suggestionLabel} is awaiting review.`
+    : selected?.score && !stale && (!rewrite || rewrite === selected.text.trim()) ? "Review complete. No new suggestion." : "");
+  renderReviewFeedback(versions, selected, draftLabel, stale || (pending && lab.stale), actionLocked);
   const error = $("#candidate-error");
-  error.textContent = message;
+  const message = candidateError || (reviewId && lab.error_op === "reviewing" && !reviewing ? lab.error : "") || "";
+  setDisplayedProperty(error, "textContent", message);
   error.classList.toggle("hidden", !message);
 }
-reviewButton.onclick = () => {
-  if (!lab.pending || reviewDialog.open) return;
-  reviewId = lab.pending.id;
+function renderReviewFeedback(versions, selected, draftLabel, hideDraftScore, actionLocked) {
+  const draftScore = hideDraftScore ? null : lab.score;
+  const round = !showDraftFeedback && selected ? (selected.score ? reviewVersion : selected.based_on) : null;
+  const name = Number.isInteger(round) ? `Suggestion ${round + 1}` : draftLabel + (lab.stale ? " before edits" : "");
+  const score = Number.isInteger(round) ? (selected.score || selected.basis_score) : draftScore;
+  setDisplayedProperty($("#candidate-feedback-title"), "textContent", score ? "Feedback on " + name : "Feedback");
+  $("#candidate-score").classList.toggle("hidden", !score);
+  setDisplayedProperty($("#candidate-score"), "textContent", score ? `${score.score} / 10` : "");
+  stableHTML($("#candidate-gaps"), score
+    ? score.gaps.map(gap => `<li>${esc(gap)}</li>`).join("") || "<li>No gaps found.</li>"
+    : "<li>No feedback on this suggestion yet.</li>");
+  $("#candidate-assessment").classList.toggle("hidden", !score);
+  if (score) {
+    setDisplayedProperty($("#candidate-assessment-meta"), "textContent",
+      `${score.by}${score.cost ? ` · $${score.cost.toFixed(3)}` : ""}${score.note ? "\n" + score.note : ""}`);
+    stableHTML($("#candidate-criteria"), Object.entries(score.criteria).map(([key, value]) =>
+      `<div><span>${esc(key.replaceAll("_", " "))}</span><b>${Number(value)}/5</b></div>`).join(""));
+  }
+  const rounds = $("#candidate-rounds"), focus = document.activeElement?.dataset.reviewRound;
+  const earlier = lab.revs.filter(rev => !hideDraftScore && rev.i !== lab.cur && rev.score != null);
+  $("#candidate-history").classList.toggle("hidden", !versions.length && !earlier.length);
+  const button = (index, label, assessment, pressed) =>
+    `<button class="btn sm" data-review-round="${index}" aria-pressed="${pressed}"${actionLocked ? " disabled" : ""}>${label} · ${assessment ? Number(assessment.score) + "/10" : "Awaiting review"}</button>`;
+  stableHTML(rounds, (draftScore ? button(-1, draftLabel, draftScore, showDraftFeedback || !selected) : "")
+    + versions.map((version, i) => button(i, `Suggestion ${i + 1}`, version.score, !showDraftFeedback && i === reviewVersion)).join(""));
+  if (focus !== undefined && !rounds.contains(document.activeElement)) {
+    rounds.querySelector('[data-review-round="' + Number(focus) + '"]')?.focus({preventScroll: true});
+  }
+  stableHTML($("#candidate-revision-scores"), earlier.map(rev => `<span>Draft v${rev.i + 1} · ${rev.score}/10${rev.stale ? " · edited" : ""}</span>`).join(""));
+}
+function reviewError(message) {
+  candidateError = message;
+  renderCandidate();
+}
+function openReview(pending, opener) {
+  if ($("dialog[open]") || (!pending && !lab.score)) return;
+  if (reviewId !== pending?.id) reviewingVersion = undefined;
+  reviewId = pending?.id;
+  reviewDraftId = editorContext;
+  reviewOpener = opener;
+  reviewCount = pending?.versions?.length || (pending ? 1 : 0);
+  reviewVersion = Math.max(0, reviewCount - 1);
+  showDraftFeedback = false;
+  candidateError = "";
+  $("#candidate-history").open = false;
+  $("#candidate-assessment").open = false;
   $("#review-show-suggestion").checked = true;
-  reviewError("");
   reviewDialog.showModal();
+  $(".candidate-body").scrollTop = 0;
+  renderCandidate();
+}
+reviewButton.onclick = () => openReview(lab.pending, reviewButton);
+$("#score-details").onclick = () => openReview(lab.pending && !lab.pending.stale ? lab.pending : null, $("#score-details"));
+$("#candidate-rounds").onclick = event => {
+  const button = event.target.closest("button[data-review-round]");
+  if (!button || button.disabled) return;
+  const index = Number(button.dataset.reviewRound);
+  showDraftFeedback = index === -1;
+  if (!showDraftFeedback) reviewVersion = index;
+  $("#review-show-original").checked = showDraftFeedback;
+  $("#review-show-suggestion").checked = !showDraftFeedback;
   renderCandidate();
 };
 $("#btn-close-review").onclick = () => reviewDialog.close();
 reviewDialog.addEventListener("close", () => {
-  if (page === "lab") (lab.pending ? reviewButton : ed).focus();
+  if (page !== "lab" || $("dialog[open]") || document.activeElement !== document.body) return;
+  const opener = reviewOpener;
+  (opener && !opener.disabled && opener.getClientRects().length ? opener : ed).focus();
 });
 ed.addEventListener("input", renderCandidate);
+$("#btn-review-suggestion").onclick = async () => {
+  if (!reviewDialog.open || $("#btn-review-suggestion").disabled) return;
+  const id = reviewId, version = reviewVersion;
+  startingReview = true;
+  reviewingVersion = version;
+  reviewError("");
+  try {
+    if (!await api().review_candidate(id, version) && reviewId === id) {
+      reviewError("Review could not start. Check the draft and try again.");
+    }
+    await loadLab().catch(() => false); // Polling retries a failed refresh.
+  } catch {
+    if (reviewId === id) reviewError("Review was not confirmed. Check the result before trying again.");
+  } finally {
+    startingReview = false;
+    renderCandidate();
+  }
+};
 async function resolveCandidate(apply) {
-  if (!reviewDialog.open || resolvingCandidate || lab.pending?.id !== reviewId) return;
-  const id = reviewId;
+  if (!reviewDialog.open || $(apply ? "#btn-apply" : "#btn-discard").disabled || lab.pending?.id !== reviewId) return;
+  const id = reviewId, version = reviewVersion;
   resolvingCandidate = true;
   reviewError("");
   renderCandidate();
@@ -692,7 +1029,7 @@ async function resolveCandidate(apply) {
       reviewError("Your edits could not be saved. Return to the draft and try again.");
       return;
     }
-    const resolved = apply ? await api().apply_candidate(id) : await api().discard_candidate(id);
+    const resolved = apply ? await api().apply_candidate(id, version) : await api().discard_candidate(id);
     await loadLab();
     if (!resolved && reviewDialog.open && reviewId === id) {
       reviewError(apply ? "Could not apply this suggestion. Your draft is preserved." : "Could not discard this suggestion. Try again.");
@@ -835,7 +1172,7 @@ document.addEventListener("keydown", ev => {
   else if (ev.ctrlKey && ev.key.toLowerCase() === "k") { openPalette(); ev.preventDefault(); }
   else if (ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.shiftKey && ev.key === "Enter" && page === "lab") { $("#btn-paste").click(); ev.preventDefault(); }
   else if (ev.ctrlKey && ev.key.toLowerCase() === "s" && page === "lab") { $("#btn-save").click(); ev.preventDefault(); }
-  else if (ev.key === "Escape") { closeMore(true); $("#drawer").close(); $("#library").classList.add("hidden"); }
+  else if (ev.key === "Escape") { closeMore(true); $("#library").classList.add("hidden"); }
 });
 
 // ---------- polling ----------
@@ -940,7 +1277,6 @@ async function poll() {
     if (S.retained_ver !== retainedVersion) { await loadRetained(); retainedVersion = S.retained_ver; }
     if (S.levels && S.levels.length) drawBars(S.levels); else if (!document.body.classList.contains("recording")) drawBars([]);
     if (S.lab_ver !== lastLabVer) { if (await loadLab() !== false) lastLabVer = S.lab_ver; }  // an aborted load is retried next tick
-    if (S.lab_busy !== lastBusy) { if (lastBusy && !S.lab_busy && lab.score && !lab.error) toast(`v${lab.cur + 1} scored ${lab.score.score}/10 by ${lab.score.by}`); lastBusy = S.lab_busy; }
     if (S.history_len !== lastHistLen) { lastHistLen = S.history_len; loadRecent(); loadSuggestions(); if (page === "history") loadHistory(); }
     if (S.event === "show_lab") show("lab");
     if (S.event === "pasted") toast("Pasted");

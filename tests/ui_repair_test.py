@@ -28,7 +28,7 @@ function saveContext(bridge){
  const R=registry(),timers=new Map();let id=0;
  const c=vm.createContext({console,Promise,window:{},document:{},settings:{vocab:'old'},api:()=>bridge,
   $:R,$$:()=>[],ed:R('#draft'),composer:R('#composer'),lab:{},editorContext:'draft-a',
-  editVersion:1,composerVersion:1,editorDirty:false,composerDirty:false,editTimer:0,composerTimer:0,
+   editVersion:1,composerVersion:1,editorDirty:false,composerDirty:false,editTimer:0,composerTimer:0,publishingDraft:false,
   recovery(){},toast(){},loadSuggestions:async()=>{},setSetting:async()=>false,setDisplayedProperty(e,k,v){if(e[k]!==v)e[k]=v},
   setTimeout(fn,ms){timers.set(++id,{fn,ms});return id},clearTimeout(id){timers.delete(id)}});
  vm.runInContext(cut('const vocab = $("#vocab");','// ---------- command palette ----------'),c);
@@ -124,41 +124,106 @@ function saveContext(bridge){
  });
  await check('Empty Instruction explains the available next step',async()=>{
   const R=registry();let submits=0;
-  const c=vm.createContext({$:R,lab:{busy:false,pending:null},composer:{value:'   ',focus(){this.focused=true}},composerVersion:0,editorContext:'a',setDisplayedProperty(e,k,v){e[k]=v},api:()=>({submit:async()=>submits++}),recovery(){},toast(){},flushAll:async()=>true});
+  const c=vm.createContext({$:R,lab:{busy:false,pending:null},feedbackRequest:null,feedbackIssues:new Map(),composer:{value:'   ',focus(){this.focused=true}},composerVersion:0,editorContext:'a',setDisplayedProperty(e,k,v){e[k]=v},api:()=>({submit:async()=>submits++}),recovery(){},toast(){},flushAll:async()=>true});
   vm.runInContext(cut('let sending=false;','$("#btn-send").onclick=send;'),c);await vm.runInContext('send()',c);
   assert.equal(submits,0);assert(c.composer.focused,'empty input was silently ignored');assert.match(R('#lab-action-error').textContent,/instruction|describe/i);
  });
- await check('A waiting or stale suggestion blocks rewrites but allows Score',async()=>{
+ await check('A waiting or stale suggestion blocks rewrites but allows Get feedback',async()=>{
   const R=registry(),calls=[];
   const c=vm.createContext({$:R,lab:{busy:false,pending:{id:'keep',stale:false}},composer:{value:'Keep this next instruction'},composerVersion:1,editorContext:'a',
-   setDisplayedProperty(e,k,v){e[k]=v},api:()=>Object.fromEntries(['submit','improve','rebuild','score'].map(method=>[method,async()=>{calls.push(method);return true}])),
-   recovery(){},toast(){},flushAll:async()=>true,loadLab:async()=>true});
+    page:'lab',editVersion:1,ed:{value:'Original draft'},feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,
+   setDisplayedProperty(e,k,v){e[k]=v},api:()=>Object.fromEntries(['submit','improve','rebuild','feedback'].map(method=>[method,async()=>{calls.push(method);return true}])),
+   recovery(){},toast(){},flushAll:async()=>true,loadLab:async()=>{c.feedbackRequest=null;return true;}});
   vm.runInContext(cut('let sending=false;','$("#btn-send").onclick=send;')+cut('for(const [id,method] of [["improve"','let sending=false;'),c);
   await vm.runInContext('send()',c);await R('#btn-improve').onclick();await R('#btn-rebuild').onclick();
   assert.deepEqual(calls,[],'a waiting suggestion started another rewrite');
   assert.match(R('#lab-action-error').textContent,/review.*(?:apply|discard)/i);
   c.lab.pending.stale=true;await vm.runInContext('send()',c);assert.deepEqual(calls,[],'a stale suggestion was silently replaced');
-  await R('#btn-score').onclick();assert.deepEqual(calls,['score'],'ordinary Score was blocked');
+  await R('#btn-score').onclick();assert.deepEqual(calls,['feedback'],'Get feedback was blocked');
   assert.equal(c.composer.value,'Keep this next instruction');assert.equal(c.lab.pending.id,'keep');
-  c.lab.pending=null;await vm.runInContext('send()',c);assert.deepEqual(calls,['score','submit'],'rewrite remained blocked after resolution');
+  c.lab.pending=null;await vm.runInContext('send()',c);assert.deepEqual(calls,['feedback','submit'],'rewrite remained blocked after resolution');
+ });
+ await check('Unconfirmed feedback stays visible and checking it makes no new request',async()=>{
+  const R=registry();let calls=0,reads=0,reject;
+  const reply=new Promise((_, fail)=>reject=fail);
+  const c=vm.createContext({$:R,lab:{busy:'',cur:0,workspace_id:'work-a'},ed:{value:'Book swap'},
+   editorContext:'draft-a',editVersion:1,composerVersion:1,page:'lab',feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,
+   composer:{value:''},setDisplayedProperty(e,k,v){if(e[k]!==v)e[k]=v},flushAll:async()=>true,
+   api:()=>({feedback:()=>{calls++;return reply;}}),loadLab:async()=>{reads++;return true;},toast(){}});
+  vm.runInContext(cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
+  const request=R('#btn-score').onclick();
+  await tick();
+  assert.equal(calls,1);assert.match(R('#lab-busy').textContent,/Getting feedback/);
+  assert.equal(R('#btn-score').disabled,false,'Waiting for feedback removed the focused action');
+  reject(new Error('Acknowledgement lost'));await request;
+  assert.match(R('#lab-busy').textContent,/Book swap.*Check for a result/i);
+  await R('#btn-score').onclick();assert.equal(calls,1,'Unconfirmed feedback submitted again before checking');
+  await R('#btn-check-feedback').onclick();assert.equal(reads,1);assert.equal(calls,1);
+  assert.match(R('#lab-busy').textContent,/No new feedback/i);
+ });
+ await check('A lost Engineer reply identifies its draft and can only be checked on the right revision',async()=>{
+  const R=registry(),pending=deferred();let calls=0;
+  const c=vm.createContext({$:R,lab:{busy:'',cur:1,workspace_id:'work-a'},ed:{value:'Book swap'},
+   editorContext:1,editVersion:1,composerVersion:1,page:'lab',feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,
+   composer:{value:''},setDisplayedProperty(e,k,v){e[k]=v},flushAll:async()=>true,loadLab:async()=>true,
+   api:()=>({draft_pass:async()=>{if(++calls===1){await pending.promise;throw Error('lost reply')}return false;}})});
+  vm.runInContext(cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
+  const engineer=R('#btn-draft-pass').onclick,check=R('#btn-check-feedback').onclick;
+  const request=engineer();await tick();assert.equal(calls,1);
+  c.lab={busy:'engineering',cur:0,workspace_id:'work-b'};c.editorContext=2;c.ed.value='New draft';pending.resolve();await request;
+  assert.match(R('#lab-busy').textContent,/Book swap.*switched drafts/i);
+  assert.equal(c.ed.value,'New draft');assert(R('#btn-check-feedback').classList.contains('hidden'));
+  c.lab={busy:'',cur:0,workspace_id:'work-a'};c.editorContext=3;c.ed.value='Earlier revision';
+  await check();assert.match(R('#lab-busy').textContent,/v2.*Book swap|Book swap.*v2/i);
+  await engineer();assert.equal(calls,1,'Checking a different revision unlocked another request');
+  c.lab.cur=1;c.editorContext=4;c.ed.value='Book swap';
+  await engineer();assert.equal(calls,1,'Returning to the source itself unlocked another request');
+  await check();await engineer();assert.equal(calls,2,'A check of the source did not allow an explicit retry');
+ });
+ await check('A lost Write suggestion reply requires a check before retrying',async()=>{
+  const R=registry();let calls=0,reads=0;
+  const c=vm.createContext({$:R,lab:{busy:'',cur:0,workspace_id:'work-a'},ed:{value:'Book swap'},
+   editorContext:1,editVersion:1,composerVersion:1,page:'lab',feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,
+   composer:{value:'Preserve the titles'},setDisplayedProperty(e,k,v){e[k]=v},recovery(){},flushAll:async()=>true,
+   api:()=>({submit:async()=>{if(++calls===1)throw Error('lost reply');return false;}}),loadLab:async()=>{reads++;return true;}});
+  vm.runInContext(cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
+  const send=()=>vm.runInContext('send()',c);
+  await send();await send();assert.equal(calls,1,'Another suggestion was requested before checking');
+  assert.equal(c.composer.value,'Preserve the titles');
+  await R('#btn-check-feedback').onclick();assert.equal(reads,1);assert.equal(calls,1);
+  await send();assert.equal(calls,2,'A read-only check did not allow an explicit retry');
+ });
+ await check('A late save failure leaves the current draft save status intact',async()=>{
+  const pending=deferred(),messages=[];
+  const save=async text=>{if(text==='old'){await pending.promise;throw Error('lost reply');}return true;};
+  const {c}=saveContext({set_text:save,set_composer:save});c.recovery=message=>messages.push(message);
+  const draft=vm.runInContext('saveEdit("old",editorContext,editVersion)',c);
+  const instruction=vm.runInContext('saveComposer("old",editorContext,composerVersion)',c);
+  c.editorContext='draft-b';c.editVersion++;c.composerVersion++;
+  await vm.runInContext('saveEdit("new",editorContext,editVersion)',c);assert.equal(messages.at(-1),'Saved locally');
+  pending.resolve();assert.equal(await draft,false);assert.equal(await instruction,false);
+  assert.equal(messages.at(-1),'Saved locally');
  });
  await check('A suggestion arriving during save also blocks the next request',async()=>{
   const R=registry(),pending=deferred();let calls=0;
-  const c=vm.createContext({$:R,lab:{busy:false,pending:null},composer:{value:'Keep this instruction'},composerVersion:1,editorContext:'a',
+  const c=vm.createContext({$:R,lab:{busy:false,pending:null},ed:{value:'Original draft'},feedbackRequest:null,feedbackIssues:new Map(),composer:{value:'Keep this instruction'},composerVersion:1,editorContext:'a',
    setDisplayedProperty(e,k,v){e[k]=v},api:()=>({submit:async()=>{calls++;return true}}),recovery(){},toast(){},flushAll:()=>pending.promise,loadLab:async()=>true});
   vm.runInContext(cut('let sending=false;','$("#btn-send").onclick=send;'),c);
   const sending=vm.runInContext('send()',c);await tick();c.lab.pending={id:'arrived'};pending.resolve(true);await sending;
   assert.equal(calls,0,'save completion ignored the newly waiting suggestion');assert.equal(c.composer.value,'Keep this instruction');
  });
  await check('Stale suggestion guidance names the required discard step',async()=>{
-  const R=registry(),c=vm.createContext({$:R,reviewDialog:{open:true},reviewId:'old',lab:{busy:false,cur:0,pending:{id:'old',text:'old suggestion',source_text:'earlier draft',stale:true}},
-   ed:{value:'newer draft'},editorDirty:false,resolvingCandidate:false,setDisplayedProperty(e,k,v){e[k]=v}});
-  vm.runInContext(cut('function renderCandidate()','function reviewError('),c);vm.runInContext('renderCandidate()',c);
+  const R=registry(),c=vm.createContext({$:R,reviewDialog:{open:true,toggleAttribute(){}},reviewId:'old',reviewDraftId:1,editorContext:1,
+   lab:{busy:false,cur:0,pending:{id:'old',text:'old suggestion',source_text:'earlier draft',stale:true}},
+   ed:{value:'newer draft'},editorDirty:false,resolvingCandidate:false,startingReview:false,
+   reviewVersion:0,reviewCount:1,candidateError:'',renderReviewFeedback(){},setDisplayedProperty(e,k,v){e[k]=v}});
+  vm.runInContext(cut('function renderCandidate()','function renderReviewFeedback('),c);vm.runInContext('renderCandidate()',c);
   assert(R('#btn-apply').disabled,'stale Apply was allowed');assert(!R('#btn-discard').disabled,'stale Discard was blocked');
+  assert(R('#btn-review-suggestion').disabled,'stale Review was allowed');
   assert.match(R('#candidate-note').textContent,/discard.*(?:new|another)/i,'stale guidance contradicted the waiting-suggestion gate');
  });
  await check('Page navigation focuses its destination instead of a hidden editor',async()=>{
-  const R=registry();const c=vm.createContext({$:R,$$:()=>[],page:'lab',lab:{text:'draft'},closeMore(){},loadHistory(){},renderSettings(){}});
+  const R=registry();const c=vm.createContext({$:R,$$:()=>[],page:'lab',lab:{text:'draft'},feedbackRequest:null,closeMore(){},loadHistory(){},renderSettings(){}});
   vm.runInContext(cut('function show(p','$$(".rail-btn").forEach(b => b.onclick'),c);
   vm.runInContext('show("history")',c);assert(R('.page[data-page="history"] h1').focused,'page heading was not focused');
  });

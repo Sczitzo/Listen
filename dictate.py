@@ -23,7 +23,7 @@ USAGE:
       fresh prompt from the current text. Every round is a revision you can
       click back to. Copy / Paste / Save as favorite from there; favorites
       also sit in the tray menu. Engineering uses Claude Opus 5; judging uses
-      the selected Haiku 5.5 (budget default) or Sonnet 5.5 model
+      the selected Haiku 5.5 (budget default), Sonnet 5.5, or Opus 5.5 model
       via the Anthropic API only when cloud use is explicitly enabled and an
       API key is available, otherwise the selected local model; both follow
       PROMPT_GUIDE, a dated digest of Anthropic's current prompting guidance.
@@ -70,7 +70,7 @@ import text_input_windows as text_delivery
 from dataclasses import replace as replace_target
 from field_access import FieldAccess
 from multiline_delivery import MultilineDelivery
-from dictation_quality import filter_segments, validate_score
+from dictation_quality import filter_segments, validate_score, without_review_followups
 from spoken_format import formatting_is_safe as cleanup_is_safe, FORMAT_INSTRUCTIONS, FORMAT_REVISION, layout_explicit_lists, prepare_spoken_list, list_layout_is_safe
 from spoken_corrections import correction_source
 from voice_commands import split_voice_command, engineering_preservation_issue
@@ -268,7 +268,8 @@ TARGET_NAMES = {"Claude Code": "claude_code", "General AI": "general"}
 JUDGE_NAMES = {"Claude (API)": "anthropic", "Local model": "local"}
 DEFAULT_JUDGE_MODEL = "claude-haiku-5-5"
 JUDGE_MODEL_NAMES = {"Haiku 5.5 · budget": DEFAULT_JUDGE_MODEL,
-                     "Sonnet 5.5 · deeper critique": "claude-sonnet-5-5"}
+                     "Sonnet 5.5 · deeper critique": "claude-sonnet-5-5",
+                     "Opus 5.5 · detailed review": "claude-opus-5-5"}
 ENGINE_NAMES = {"Claude (API)": "anthropic", "Local model": "local"}
 LEARNED_FILE = os.path.join(APP_DIR, "learned.json")
 SETTINGS = {"hotkey": "ctrl_r", "cleanup": True, "style": "tighten", "learn": True, "live_preview": True,
@@ -522,19 +523,21 @@ REFINE_PROMPT = (
 ENGINE_MODEL = "claude-opus-5"  # Approved choice; the historical three-sample self-grading screen does not establish best quality.
 JUDGE_MODEL = DEFAULT_JUDGE_MODEL  # Owner-selected budget default; each operation snapshots its selected model.
 PRICES = {"claude-opus-5": (5, 25), "claude-sonnet-5": (2, 10), "claude-haiku-4-5": (1, 5),
-          "claude-haiku-5-5": (.1, .5), "claude-sonnet-5-5": (2, 10)}  # $/MTok in, out
+          "claude-haiku-5-5": (.1, .5), "claude-sonnet-5-5": (2, 10), "claude-opus-5-5": (4, 20)}  # $/MTok in, out
 JUDGE_PROMPT = (
     "You are a prompt-quality reviewer. Judge prompt_to_review in the user JSON for "
     "its stated target against the guide below, and only for that target. Score "
     "each criterion 1-5: clarity (guide 1, 5), context (2), task (3, 10), "
     "constraints (7), success_criteria (6, 9), format (3, 4, 11). Give an overall "
     "score 1-10. List up to five specific gaps, one sentence each, most important "
-    "first, naming what is missing or weak in this prompt rather than restating a "
-    "criterion. Do not penalize a legitimate requested check or prohibition. Then write an "
-    "improved prompt that fixes the gaps while keeping every specific the user "
-    "gave verbatim and inventing no requirements; where essential information is "
-    "genuinely missing, add an explicit missing-input placeholder or a question for the user to "
-    "answer. If the prompt is already strong, say so in gaps as a single entry "
+    "first. State missing information and conflicts as findings. Do not penalize a legitimate "
+    "requested check or prohibition. Complete the review in this response without asking "
+    "the user any follow-up questions. Write an improved prompt that preserves the user's "
+    "specifics verbatim and invents no requirements. When the guide allows a clarifying question, "
+    "use a short bracketed placeholder instead, such as [specify source currency]. For conflicts, "
+    "name the conflicting requirements in gaps and leave a placeholder for the choice in the "
+    "rewrite. Do not pick an interpretation. Preserve questions that belong to the original task. "
+    "If the prompt is already strong, say so in gaps as a single entry "
     "and return it unchanged as improved.\n\n" + PROMPT_GUIDE
 )
 TRANSFORM_BOUNDARY = (
@@ -1992,6 +1995,7 @@ def run_judge(prompt):
         note = f"Claude was unavailable; scored locally with {data['by']}."
     data = validate_score(data)
     data["note"] = note
+    data = without_review_followups(data, prompt)
     print(f"[judge] {data['score']}/10 by {data['by']} ${data['cost']:.3f} gaps={len(data['gaps'])}")
     return data
     # ponytail: OpenAI judge not built; add a _judge_openai() and a JUDGE_NAMES entry when wanted
@@ -2036,7 +2040,7 @@ def _lab_snapshot():
         return epoch, cur, cur["text"] if cur else ""
 
 
-def _lab_score(rev):
+def _lab_score(rev, feedback_id=None):
     with _lab_lock:
         epoch = getattr(_lab_thread, "epoch", _lab_epoch)
         text = rev["text"]
@@ -2046,8 +2050,14 @@ def _lab_score(rev):
     with _lab_lock:
         if not _lab_valid(epoch) or not any(r is rev for r in _lab["revs"]) or rev["text"] != text:
             return False
+        if feedback_id is not None:
+            score["feedback_id"] = feedback_id
         rev["score"], rev["stale"] = score, False
         _lab["ver"] += 1
+        if feedback_id is not None:
+            improved = score["improved"].strip()
+            if improved and improved != text.strip():
+                set_candidate(sys.modules[__name__], improved, "improve", score["by"], 0.0, epoch, text)
     return True
 
 
@@ -2065,7 +2075,7 @@ def _lab_failure_message(op, error):
     elif isinstance(error, json.JSONDecodeError):
         explanation = "The model response could not be used. Try again."
     else:
-        operation = "Prompt assessment" if op == "scoring" else "Prompt writing"
+        operation = "Prompt assessment" if op in ("scoring", "reviewing") else "Prompt writing"
         explanation = f"{operation} could not finish; the cause is unclear. Try again, or check Diagnostics if it happens again."
     return explanation + " Your current Draft and Instruction remain open."
 
@@ -2073,14 +2083,16 @@ def _lab_failure_message(op, error):
 def lab_run(op, fn, *, suggestion=False):
     """Reserve the operation before starting its thread; discard stale completions."""
     with _lab_lock:
-        if _quitting or _lab["busy"] or _speech_changing:
+        prepared = _lab.get("prepared_pass")
+        if _quitting or _lab["busy"] or _speech_changing or (prepared and _lab_valid(prepared["epoch"])):
             return False
+        _lab.pop("prepared_pass", None)
         if suggestion and globals().get('_pending') is not None:
             _lab['error'] = 'Review or discard the current suggestion before writing another.'
             _lab['ver'] += 1
             return False
         epoch = _lab_epoch
-        _lab["busy"], _lab["error"] = op, ""
+        _lab.update(busy=op, error="", error_op="")
         _lab["ver"] += 1
         spent = _lab_cost()
         choices = dict(SETTINGS)
@@ -2106,6 +2118,7 @@ def lab_run(op, fn, *, suggestion=False):
             with _lab_lock:
                 if _lab_valid(epoch):
                     _lab["error"] = _lab_failure_message(op, e)
+                    _lab["error_op"] = op
             print(f"[error] lab {op}: {type(e).__name__}")
             _chime("error")
         finally:
@@ -2150,7 +2163,10 @@ def lab_improve():
         if not _lab_valid(epoch):
             return
         improved = (cur["score"].get("improved") or "").strip()
-        if not improved or improved == text.strip():
+        if not improved:
+            _lab["error"] = "The review returned no complete suggestion. Your draft was kept."
+            return
+        if improved == text.strip():
             _lab["error"] = "The judge returned no changes; this revision is already as strong as it can make it."
             return
         set_candidate(sys.modules[__name__], improved, "improve", cur["score"]["by"], 0.0, epoch, text)
@@ -2165,6 +2181,40 @@ def lab_rebuild():
         if not _lab_valid(epoch):
             return
         set_candidate(sys.modules[__name__], out, "rebuild", by, cost, epoch, text)
+
+
+def lab_draft_pass(request, refine):
+    epoch, current, source = _lab_snapshot()
+    if current is None or not _lab_valid(epoch):
+        return
+    if refine:
+        candidate, by, cost = engineer(
+            "Improve the prompt's clarity and usefulness. Preserve the intent, facts, and constraints.", source)
+    else:
+        candidate, by, cost = engineer(source)
+    candidate = candidate.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not candidate:
+        raise ValueError("The writing model returned an empty draft")
+    with _lab_lock:
+        if not _lab_valid(epoch) or _lab_cur() is not current:
+            return
+        previous = current["score"]["score"] if refine else None
+    grade = None if refine and candidate == source.strip() else validate_score(run_judge(candidate))
+    with _lab_lock:
+        if not _lab_valid(epoch) or _lab_cur() is not current or current["text"] != source:
+            return
+        source_id = _lab_draft_id
+        if refine and (grade is None or grade["score"] <= previous):
+            _lab["draft_pass"] = {
+                "id": request, "source_id": source_id, "draft_id": source_id,
+                "message": "No meaningful improvement this pass. Your draft and score are unchanged.",
+            }
+        else:
+            version = _lab_rev(candidate, "refine" if refine else "engineer", by, cost)
+            version["score"] = grade
+            # The app must check for edits still in the typing area before replacing text.
+            _lab["prepared_pass"] = {"id": request, "epoch": epoch, "version": version}
+        _lab["ver"] += 1
 
 
 def _locked_lab(fn):
@@ -2214,7 +2264,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261116-listen13"
+UI_VERSION = "20261118-listen17"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -2522,12 +2572,17 @@ class Api(ExperienceApi):
         revs = _lab["revs"]
         cur = _lab_cur()
         prev = next((r["score"]["score"] for r in reversed(revs[:_lab["cur"]]) if r["score"]), None) if cur else None
+        prepared = _lab.get("prepared_pass")
+        if prepared and not _lab_valid(prepared["epoch"]):
+            _lab.pop("prepared_pass")
+            prepared = None
         return {**self._workspace_details(), "revs": [{"i": i, "kind": r["kind"], "score": r["score"]["score"] if r["score"] else None,
                           "stale": r["stale"], "by": r["by"]} for i, r in enumerate(revs)],
                 "draft_id": _lab_draft_id, "edit_id": _lab_edit_id, "cur": _lab["cur"], "text": cur["text"] if cur else "",
                 "by": cur["by"] if cur else None, "stale": cur["stale"] if cur else False,
                 "score": cur["score"] if cur else None, "prev_score": prev,
-                "fav": _lab["fav"], "busy": _lab["busy"], "error": _lab["error"],
+                "fav": _lab["fav"], "busy": _lab["busy"], "error": _lab["error"], "error_op": _lab.get("error_op", ""),
+                "draft_pass": _lab.get("draft_pass"), "prepared_pass": prepared["id"] if prepared else None,
                 "session_cost": _lab_cost()}
 
     @_locked_lab
@@ -2622,6 +2677,41 @@ class Api(ExperienceApi):
     def score(self):
         cur = _lab_cur()
         return bool(cur and cur["text"].strip()) and lab_run("scoring", lambda: _lab_score(cur))
+
+    @_locked_lab
+    def feedback(self, draft_id, text):
+        cur = _lab_cur()
+        if (type(draft_id) is not int or draft_id != _lab_draft_id or type(text) is not str
+                or not text.strip() or cur is None or text != cur["text"]):
+            return False
+        request = uuid.uuid4().hex
+        return request if lab_run("scoring", lambda: _lab_score(cur, request)) else False
+
+    @_locked_lab
+    def draft_pass(self, draft_id, text, refine):
+        cur = _lab_cur()
+        if (type(draft_id) is not int or draft_id != _lab_draft_id or type(text) is not str
+                or not text.strip() or cur is None or type(refine) is not bool
+                or text != cur["text"].replace("\r\n", "\n").replace("\r", "\n")
+                or (refine and (not cur["score"] or cur["stale"]))):
+            return False
+        request = uuid.uuid4().hex
+        operation = "refining" if refine else "engineering"
+        return request if lab_run(operation, lambda: lab_draft_pass(request, refine), suggestion=True) else False
+
+    @_locked_lab
+    def finish_draft_pass(self, draft_id, request):
+        prepared = _lab.get("prepared_pass")
+        if (prepared and not _lab["busy"] and not _quitting and type(draft_id) is int
+                and draft_id == _lab_draft_id and prepared["id"] == request and _lab_valid(prepared["epoch"])):
+            _lab.pop("prepared_pass")
+            _lab["ver"] += 1
+            if commit_workspace_transition(sys.modules[__name__], lambda: _lab_add(prepared["version"])):
+                _lab["draft_pass"] = {"id": request, "source_id": draft_id, "draft_id": _lab_draft_id,
+                                      "message": "Draft updated."}
+            else:
+                _lab.update(error_op="engineering", error="The scored draft could not be saved. Your draft and score were kept.")
+        return self.get_lab()
 
     @_locked_lab
     def select_rev(self, i):
@@ -2870,7 +2960,8 @@ def _quit_work_message():
     if _recording.is_set():
         return 'Use Finish or Cancel to end recording before quitting.'
     if _lab['busy']:
-        operation = 'assessing your draft' if _lab['busy'] == 'scoring' else 'writing a suggestion'
+        operation = {'scoring': 'assessing your draft', 'reviewing': 'reviewing your suggestion'}.get(
+            _lab['busy'], 'writing a suggestion')
         return f'Prompt Lab is {operation}. Wait for it to finish, then try Quit again.'
     if _pending_pastes:
         return 'Text delivery is still finishing. Wait for it to finish, then try Quit again.'

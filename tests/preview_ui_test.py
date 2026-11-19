@@ -47,7 +47,8 @@ function setup(){
   options:{},esc:x=>String(x),renderChips(){},renderSettings(){},renderLearned(){},refreshModels(){},
   loadHistory:async()=>{},loadRecent:async()=>{},loadLab:async()=>{},loadSuggestions(){},loadRetained:async()=>{},
   loadDeliveryStatus:async()=>{},drawBars(){},show(){},setTimeout(){},
-  bridgeLost:false,lastErr:'',retainedVersion:0,lastLabVer:0,lastBusy:'',lastHistLen:0,lab:{},editorDirty:false,composerDirty:false});
+  bridgeLost:false,lastErr:'',retainedVersion:0,lastLabVer:0,lastBusy:'',lastHistLen:0,lab:{},editorDirty:false,composerDirty:false,
+  feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0});
  vm.runInContext(preview+setting+clear+status+polling+actions,context);
  return {c:context,$,$$,bridge,notices,focusCalls:()=>focusCalls};
 }

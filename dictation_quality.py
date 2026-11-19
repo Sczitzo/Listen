@@ -94,6 +94,32 @@ def cleanup_is_safe(raw, cleaned, vocab=()):
     return words_ok(before) or (spoken != raw and words_ok(tokens(spoken)))
 
 
+# shortcut: covers explicit questions and common confirmation requests, extend only from observed misses.
+_REVIEW_SENTENCE = re.compile(r'[\r\n"\u201c\u201d]+|(?<=[.!?\uff1f])\s+')
+_REVIEW_QUESTION = re.compile(r"[?\uff1f](?=\s|$|['\u2019)\]])")
+_REVIEW_REQUEST = re.compile(
+    r"^(?:(?:question for you|follow[- ]up question|clarifying question)\s*:"
+    r"|(?:please|(?:can|could|will|would) you) (?:clarify|confirm|tell me|let me know)\b)", re.I)
+
+
+def without_review_followups(score, draft):
+    def added_request(text):
+        for sentence in _REVIEW_SENTENCE.split(text):
+            sentence = sentence.strip(" \t-*#>`'[]()")
+            if (_REVIEW_QUESTION.search(sentence) or _REVIEW_REQUEST.match(sentence)) and sentence not in draft:
+                return True
+        return False
+
+    gaps = [gap for gap in score["gaps"] if not added_request(gap)]
+    keep_draft = added_request(score["improved"])
+    if keep_draft or len(gaps) != len(score["gaps"]):
+        score["gaps"] = gaps or ["The review found a detail that still needs to be specified."]
+        score["note"] = (score["note"] + " The review omitted a follow-up.").strip()
+        if keep_draft:
+            score["improved"] = ""
+    return score
+
+
 def validate_score(data):
     if not isinstance(data, dict) or not _finite(data.get('score'), 1, 10):
         raise ValueError('Invalid score')

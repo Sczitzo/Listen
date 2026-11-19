@@ -1,7 +1,7 @@
 # Regression checks
 
 From the repository root: `python tests/run_tests.py --no-devices`.
-The 70 selected suites use disposable app data and block real network, devices,
+The 71 selected suites use disposable app data and block real network, devices,
 physical input and clipboard access. This export includes the configured suites
 and helpers, without private desktop trial recordings/results. The code-only
 baseline.zip is required by latency_contract_test.py.

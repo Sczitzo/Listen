@@ -3,7 +3,10 @@
 Windows dictation with local speech recognition, optional Ollama text cleanup,
 a floating recording panel, and a writing workspace.
 
-## Development snapshot — November 17, 2026
+Created by Sczitzo. Free to use under the MIT License: keep the copyright
+notice and credit when you reuse it.
+
+## Development snapshot — November 18, 2026 (build 20261118-listen17)
 
 The Warm charcoal / Humanist interface follows the approved Quiet Instrument and
 Writer's Desk composition. The recording card uses a titled continuous border,
@@ -51,7 +54,7 @@ reuses an existing instance.
 python tests/run_tests.py --no-devices
 ```
 
-The 70 selected suites use disposable app data and block real network, microphone,
+The 71 selected suites use disposable app data and block real network, microphone,
 physical input and clipboard access. They do not establish live recognition or
 delivery quality. The separate Windows card harness is opt-in and uses an owned
 sample editor. See tests/README.md.
@@ -63,4 +66,7 @@ launch/setup scripts and one code-only baseline archive required by latency test
 Local development history, recordings, model/native binaries, drafts, settings,
 credentials, owner notes, screenshots and runtime logs are excluded.
 Licensed Mixkit WAV files are omitted; synthesized fallback sounds remain.
-No source license is granted by this backup.
+
+## License
+
+MIT. See LICENSE.

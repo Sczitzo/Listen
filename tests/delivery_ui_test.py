@@ -16,9 +16,9 @@ async function delayedSend(){
   submit:async(text,context)=>{calls.push({text,context,draft:bridge.currentDraft});return true},new_draft:async()=>{bridge.currentDraft++;return true}};
  const c=vm.createContext({composer:{value:'Instruction for A',addEventListener(){}},ed:{value:'Draft A',focus(){}},
   editorContext:1,editVersion:1,composerVersion:1,editorDirty:false,composerDirty:true,editTimer:null,composerTimer:null,
-  lab:{busy:false},api:()=>bridge,clearTimeout(){},setTimeout(){},recovery(){},toast(){},
+  lab:{busy:false},feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,api:()=>bridge,clearTimeout(){},setTimeout(){},recovery(){},toast(){},
   setDisplayedProperty(el,key,value){el[key]=value;},
-  $:id=>controls[id]??=(id==='#drawer'?{close(){}}:{dataset:{},classList:{toggle(){}}}),
+  $:id=>controls[id]??={dataset:{},classList:{toggle(){}}},
   loadLab:async()=>{c.editorContext=bridge.currentDraft;c.composer.value=''}});
  const saves=src.slice(src.indexOf('async function saveEdit('),src.indexOf('window.requestDictationQuit'));
  const send=src.slice(src.indexOf('let sending=false;'),src.indexOf('$("#btn-send").onclick=send;'));

@@ -2,6 +2,7 @@
 import copy
 import uuid
 from workspace_state import WorkspaceStore, CostLedger
+from dictation_quality import validate_score
 
 
 def ensure(r):
@@ -15,9 +16,12 @@ def ensure(r):
 
 
 def _snapshot(r):
+    # shortcut: review rounds live in memory, add versioned recovery if history must survive Quit.
+    pending = ({k: copy.deepcopy(v) for k, v in r._pending.items() if k != 'versions'}
+               if r._pending else None)
     return {'id': r._workspace_id, 'revisions': [dict(text=x['text'], kind=x['kind'],
         by=x.get('by') or '', cost=x.get('cost') or 0, score=None, stale=True) for x in r._lab['revs']],
-        'cur': r._lab['cur'], 'composer': r._composer, 'pending': copy.deepcopy(r._pending)}
+        'cur': r._lab['cur'], 'composer': r._composer, 'pending': pending}
 
 
 def persist_workspace(r):
@@ -127,12 +131,20 @@ def _stale(r, candidate):
         or candidate.get('source_workspace') != r._workspace_id or candidate.get('source_text') != _text(r))
 
 
+def _candidate_version(pending, version):
+    versions = pending.get('versions') or [pending]
+    if version is None:
+        return versions[-1]
+    return versions[version] if type(version) is int and 0 <= version < len(versions) else None
+
+
 def set_candidate(r, text, kind, by, cost, epoch, source_text):
     ensure(r)
     with r._lab_lock:
         if r._pending is not None or epoch != r._lab_epoch or source_text != _text(r): return None
         r._pending = dict(id=str(uuid.uuid4()), text=text, kind=kind, by=by or '', cost=cost or 0,
-            source_text=source_text, source_workspace=r._workspace_id, source_epoch=epoch, stale=False)
+            source_text=source_text, source_workspace=r._workspace_id, source_epoch=epoch, stale=False,
+            versions=[dict(text=text, by=by or '', cost=cost or 0, score=None, based_on=None)])
         r._lab['ver'] += 1
         persist_workspace(r)
         return copy.deepcopy(r._pending)
@@ -174,17 +186,61 @@ class ExperienceApi:
             r._composer = text
             return persist_workspace(r)
 
-    def apply_candidate(self, identity):
+    def review_candidate(self, identity, version):
         r = self._runtime(); ensure(r)
         with r._lab_lock:
             pending = r._pending
-            if not pending or identity != pending.get('id') or _stale(r, pending): return False
+            if not pending or identity != pending['id'] or _stale(r, pending) or type(version) is not int:
+                return False
+            selected = _candidate_version(pending, version)
+            if selected is None or not selected['text'].strip():
+                return False
+            text = selected['text']
+
+            def review():
+                with r._lab_lock:
+                    if not r._pending or identity != r._pending['id'] or _stale(r, r._pending):
+                        return
+                score = validate_score(r.run_judge(text))
+                with r._lab_lock:
+                    current = r._pending
+                    if not current or identity != current['id'] or _stale(r, current):
+                        return
+
+                    def update():
+                        versions = current['versions']
+                        versions[version]['score'] = score
+                        improved = score['improved'].strip()
+                        if improved and improved != text.strip():
+                            versions.append(dict(text=improved, by=score['by'], cost=0.0,
+                                                 score=None, based_on=version, basis_score=score))
+                            current.update(text=improved, by=score['by'], cost=0.0)
+
+                    if not commit_workspace_transition(r, update):
+                        r._lab.update(error_op='reviewing',
+                                      error='Could not save this review. Your draft and suggestion remain open. Try again.')
+
+            return r.lab_run('reviewing', review)
+
+    def apply_candidate(self, identity, version=None):
+        r = self._runtime(); ensure(r)
+        with r._lab_lock:
+            pending = r._pending
+            if not pending or identity != pending.get('id') or _stale(r, pending) or r._lab.get('busy') == 'reviewing':
+                return False
+            selected = _candidate_version(pending, version)
+            if selected is None:
+                return False
+
             def apply():
                 r._lab_epoch += 1
-                r._lab_add(r._lab_rev(pending['text'], pending['kind'], pending.get('by'), pending.get('cost', 0)))
+                revision = r._lab_rev(selected['text'], pending['kind'], selected.get('by'), selected.get('cost', 0))
+                revision['score'] = selected.get('score')
+                r._lab_add(revision)
                 r._pending = None
-                if r._lab.get('error') == 'Review or discard the current suggestion before writing another.':
-                    r._lab['error'] = ''
+                if (r._lab.get('error_op') == 'reviewing'
+                        or r._lab.get('error') == 'Review or discard the current suggestion before writing another.'):
+                    r._lab.update(error='', error_op='')
             return commit_workspace_transition(r, apply)
 
     def discard_candidate(self, identity):
@@ -193,8 +249,9 @@ class ExperienceApi:
             if not r._pending or r._pending.get('id') != identity: return False
             def discard():
                 r._pending = None
-                if r._lab.get('error') == 'Review or discard the current suggestion before writing another.':
-                    r._lab['error'] = ''
+                if (r._lab.get('error_op') == 'reviewing'
+                        or r._lab.get('error') == 'Review or discard the current suggestion before writing another.'):
+                    r._lab.update(error='', error_op='')
                 r._lab['ver'] += 1
             return commit_workspace_transition(r, discard)
 
@@ -237,6 +294,8 @@ class ExperienceApi:
                         _invalidate(r)
                         r._recovery_generation = getattr(r, '_recovery_generation', 0) + 1
                         r._lab.update(revs=[], cur=-1, fav='', error='')
+                        r._lab.pop('prepared_pass', None)
+                        r._lab.pop('draft_pass', None)
                         r._workspace_id = str(uuid.uuid4())
                         r._composer = ''; r._pending = None; r._archived = []; r._retained = []
                         r._retained_ver = getattr(r, '_retained_ver', 0) + 1

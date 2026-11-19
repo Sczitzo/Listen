@@ -13,6 +13,7 @@ from types import ModuleType, SimpleNamespace
 SOURCE = Path(__file__).resolve().parents[1] / 'dictate.py'
 sys.path.insert(0, str(SOURCE.parent))
 import experience_bridge as experience
+from dictation_quality import without_review_followups
 
 
 class ConnectionError(Exception):
@@ -72,6 +73,7 @@ def runtime():
         OLLAMA_MODEL='default-local-model', ENGINE_MODEL='cloud-model',
         ENGINEER_PROMPT={'general': 'synthetic system'}, REFINE_PROMPT='synthetic refine',
         validate_score=lambda data: data,
+        without_review_followups=without_review_followups,
     )
     functions = {'engineer', 'run_judge', 'lab_run', 'quit_app', '_locked_lab',
                  '_lab_failure_message', '_quit_work_message', '_lab_snapshot',
@@ -110,7 +112,7 @@ def judge_fallback():
     r, unused = runtime()
     r.SETTINGS.update(judge='anthropic', cloud_enabled=True)
     r._judge_anthropic = lambda text: fail(RuntimeError('private/path'))
-    r._judge_local = lambda text: {'score': 7, 'by': 'selected-local-model', 'cost': 0, 'gaps': []}
+    r._judge_local = lambda text: {'score': 7, 'by': 'selected-local-model', 'cost': 0, 'gaps': [], 'improved': text}
     result = r.run_judge('Retained Draft')
     assert result['by'] in result['note'] and 'locally' in result['note'], result
     assert 'RuntimeError' not in result['note'] and 'private/path' not in result['note'], result

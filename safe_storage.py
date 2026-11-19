@@ -95,7 +95,7 @@ def valid_setting(key, value):
         return isinstance(value, str) and value in SPEECH_MODEL_IDS
     options = {'hotkey': {'ctrl_r', 'shift_r', 'alt_r', 'pause', 'scroll_lock'}, 'style': {'tighten', 'clean'},
                'target': {'claude_code', 'general'}, 'judge': {'anthropic', 'local'}, 'engine': {'anthropic', 'local'},
-               'judge_model': {'claude-haiku-5-5', 'claude-sonnet-5-5'}}
+               'judge_model': {'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'}}
     if key in options:
         return isinstance(value, str) and value in options[key]
     if key in ('cleanup', 'learn', 'cloud_enabled', 'live_preview'):

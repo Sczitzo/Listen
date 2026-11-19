@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Listen</title>
-  <link rel="stylesheet" href="app.css?v=20261116-listen13">
+  <link rel="stylesheet" href="app.css?v=20261118-listen17">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -18,7 +18,6 @@
   <symbol id="i-chart" viewBox="0 0 24 24"><line x1="12" x2="12" y1="20" y2="10"/><line x1="18" x2="18" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="16"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
-  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
   <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></symbol>
@@ -108,6 +107,7 @@
       <fieldset class="editor-wrap frame lab-field" aria-labelledby="draft-label">
         <legend class="frame-title lab-field-title">
           <label for="draft" id="draft-label">Draft</label>
+          <span class="score-badge hidden" id="score-badge"></span>
           <button class="btn quiet sm hidden" id="btn-revisions" popovertarget="lab-revisions"><span id="draft-version"></span><span class="sr-only"> · Draft revisions</span><svg class="ico down" aria-hidden="true"><use href="#i-chevron"/></svg></button>
         </legend>
         <div class="lab-popover" id="lab-revisions" popover>
@@ -118,25 +118,13 @@
           <span id="lab-cost" class="muted"></span>
           <div id="recovery-status" class="muted" role="status" aria-live="polite">Loading recovery…</div>
         </div>
-        <textarea id="draft" class="editor" spellcheck="false" placeholder="Paste or dictate a prompt here, or describe what you want below."></textarea>
+        <textarea id="draft" class="editor" spellcheck="false" placeholder="Write a prompt or describe what you want it to do."></textarea>
         <div class="editor-bars" id="bars-lab" aria-hidden="true"></div>
-        <div class="scorebar hidden" id="scorebar">
-          <span class="score-badge" id="score-badge"></span>
-          <span class="score-prev muted" id="score-prev"></span>
-          <span class="score-gaps muted" id="score-gaps"></span>
-          <button class="link" id="score-details">Details</button>
-        </div>
-      </fieldset>
-      <fieldset class="composer frame lab-field" aria-labelledby="instruction-label">
-        <legend class="frame-title lab-field-title"><label id="instruction-label" for="composer">Instruction</label></legend>
-        <textarea id="composer" class="input frame-input" rows="8" placeholder="Describe what you want to change." autocomplete="off"></textarea>
-        <p id="lab-action-error" class="muted hidden" role="alert"></p>
       </fieldset>
       <div class="actions draft-actions shared-lab-actions">
-          <button class="btn primary" id="btn-send" title="Enter">Write suggestion<svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button>
-          <button class="btn quiet" id="btn-score" title="Get feedback on the current draft against the rubric"><svg class="ico" aria-hidden="true"><use href="#i-chart"/></svg>Get feedback</button>
+          <button class="btn primary hidden" id="btn-copy"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button>
+          <button class="btn primary" id="btn-draft-pass">Engineer</button>
           <span class="spacer"></span>
-          <button class="btn quiet" id="btn-copy"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button>
           <div class="more-actions">
             <button class="btn quiet" id="btn-more" aria-label="More draft actions" title="More draft actions" aria-expanded="false" aria-controls="more-menu">···</button>
             <div class="actions hidden" id="more-menu" aria-label="More draft actions">
@@ -149,11 +137,29 @@
             </div>
           </div>
       </div>
-      <div class="compose-foot lab-key-help"><span class="muted"><kbd id="composer-key">Right Ctrl</kbd> to dictate</span><span class="muted">Enter to write · Shift+Enter for a new line</span></div>
       <div class="suggestion-status lab-suggestion-state">
-            <span id="lab-busy" role="status"></span>
-            <button class="btn quiet hidden" id="btn-review" aria-haspopup="dialog" aria-controls="candidate">Compare suggestion<svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+        <span id="lab-busy" role="status" aria-atomic="true"></span>
+        <button class="btn quiet hidden" id="btn-check-feedback">Check for result</button>
+        <button class="btn quiet hidden" id="btn-review" aria-haspopup="dialog" aria-controls="candidate"><span id="review-action-label">Compare suggestion</span><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button>
       </div>
+      <details class="legacy-lab-tools">
+        <summary>Earlier draft tools</summary>
+        <fieldset class="composer frame lab-field" aria-labelledby="instruction-label">
+          <legend class="frame-title lab-field-title"><label id="instruction-label" for="composer">Instruction</label></legend>
+          <textarea id="composer" class="input frame-input" rows="3" placeholder="Describe what you want to change." autocomplete="off"></textarea>
+          <p id="lab-action-error" class="muted hidden" role="alert"></p>
+        </fieldset>
+        <div class="actions">
+          <button class="btn quiet" id="btn-send" title="Enter">Write suggestion</button>
+          <button class="btn quiet" id="btn-score">Get feedback</button>
+        </div>
+        <div class="compose-foot lab-key-help"><span class="muted"><kbd id="composer-key">Right Ctrl</kbd> to dictate</span><span class="muted">Enter to write · Shift+Enter for a new line</span></div>
+        <div class="scorebar hidden" id="scorebar">
+          <span class="score-prev muted" id="score-prev"></span>
+          <span class="score-gaps muted" id="score-gaps"></span>
+          <button class="link" id="score-details" aria-haspopup="dialog" aria-controls="candidate">View feedback</button>
+        </div>
+      </details>
       <div class="popover hidden" id="library">
         <div class="popover-head"><span>Favorites</span><span class="muted">Choose a favorite to load it. Remove offers Undo.</span></div>
         <ul class="list" id="fav-list"></ul>
@@ -193,29 +199,54 @@
       <h2 id="candidate-title">Compare suggestion</h2>
       <button class="btn sm" id="btn-close-review" autofocus>Back to draft</button>
     </div>
-    <p class="muted hidden" id="candidate-note"></p>
-    <fieldset class="candidate-versions">
-      <legend class="sr-only">Version to read</legend>
-      <label><input type="radio" id="review-show-original" name="review-version"><span>Original</span></label>
-      <label><input type="radio" id="review-show-suggestion" name="review-version" checked><span>Suggestion</span></label>
-    </fieldset>
-    <div class="candidate-grid">
-      <fieldset class="candidate-panel candidate-source frame">
-        <legend class="frame-title"><label for="candidate-original">Original</label></legend>
-        <p class="muted candidate-meta" id="candidate-version"></p>
-        <textarea id="candidate-original" class="input frame-input" readonly></textarea>
+    <div class="candidate-body">
+      <p class="muted hidden" id="candidate-note"></p>
+      <fieldset class="candidate-versions">
+        <legend class="sr-only">Version to read</legend>
+        <label><input type="radio" id="review-show-original" name="review-version"><span>Original</span></label>
+        <label><input type="radio" id="review-show-suggestion" name="review-version" checked><span>Suggestion</span></label>
       </fieldset>
-      <fieldset class="candidate-panel candidate-suggestion frame">
-        <legend class="frame-title"><label for="candidate-text">Suggestion</label></legend>
-        <p class="muted candidate-meta" id="candidate-model"></p>
-        <textarea id="candidate-text" class="input frame-input" readonly></textarea>
-      </fieldset>
+      <div class="candidate-grid">
+        <fieldset class="candidate-panel candidate-source frame">
+          <legend class="frame-title"><label for="candidate-original">Original</label></legend>
+          <p class="muted candidate-meta" id="candidate-version"></p>
+          <textarea id="candidate-original" class="input frame-input" readonly></textarea>
+        </fieldset>
+        <fieldset class="candidate-panel candidate-suggestion frame">
+          <legend class="frame-title"><label for="candidate-text" id="candidate-label">Suggestion</label></legend>
+          <p class="muted candidate-meta" id="candidate-model"></p>
+          <textarea id="candidate-text" class="input frame-input" readonly></textarea>
+        </fieldset>
+      </div>
+      <section class="candidate-feedback" aria-labelledby="candidate-feedback-title">
+        <div class="candidate-feedback-head">
+          <h3 id="candidate-feedback-title">Feedback</h3>
+          <span class="score-badge hidden" id="candidate-score"></span>
+        </div>
+        <ul class="gaps" id="candidate-gaps"></ul>
+        <details id="candidate-assessment" class="hidden">
+          <summary>Assessment details</summary>
+          <p class="muted" id="candidate-assessment-meta"></p>
+          <div class="criteria" id="candidate-criteria"></div>
+        </details>
+      </section>
+      <details id="candidate-history" class="hidden">
+        <summary>Review history</summary>
+        <div class="score-history" id="candidate-rounds"></div>
+        <div class="score-history" id="candidate-revision-scores"></div>
+      </details>
     </div>
-    <p id="candidate-error" class="hidden" role="alert"></p>
-    <div class="actions candidate-foot">
-      <button class="btn" id="btn-discard">Discard suggestion</button>
-      <button class="btn primary" id="btn-apply">Apply suggestion</button>
-    </div>
+    <footer class="candidate-foot">
+      <p id="candidate-status" class="muted" role="status"></p>
+      <p id="candidate-error" class="hidden" role="alert"></p>
+      <div class="actions candidate-actions">
+        <button class="btn" id="btn-review-suggestion">Review suggestion</button>
+        <div class="actions">
+          <button class="btn" id="btn-discard">Discard suggestion</button>
+          <button class="btn primary" id="btn-apply">Apply suggestion</button>
+        </div>
+      </div>
+    </footer>
   </dialog>
 
   <dialog id="favorite-name-dialog" class="name-dialog" aria-labelledby="favorite-name-title">
@@ -235,23 +266,12 @@
       <div class="actions"><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn primary" value="ok">Continue</button></div>
     </form>
   </dialog>
-  <!-- score details drawer -->
-  <dialog class="drawer" id="drawer" aria-label="Model assessment details">
-    <div class="drawer-head"><span>Model assessment details</span><button class="icon-btn" id="drawer-close" title="Close"><svg class="ico" aria-hidden="true"><use href="#i-x"/></svg></button></div>
-    <div class="drawer-score"><span class="big" id="drawer-score">8</span><span class="muted">/ 10</span><span class="muted" id="drawer-meta"></span></div>
-    <div class="criteria" id="drawer-criteria"></div>
-    <div class="drawer-title">Gaps</div>
-    <ul class="gaps" id="drawer-gaps"></ul>
-    <div class="drawer-title">History</div>
-    <div class="score-history" id="drawer-history"></div>
-  </dialog>
-
   <!-- command palette -->
   <dialog class="palette" id="palette" aria-labelledby="palette-title"><div class="palette-box"><h2 id="palette-title" class="sr-only">Command palette</h2><label for="palette-input" class="sr-only">Command search</label><input id="palette-input" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="palette-list" placeholder="Type a command…" autocomplete="off"><ul id="palette-list" role="listbox" aria-label="Commands"></ul><p id="palette-empty" class="muted hidden" role="status">No matching commands. Try another search.</p></div></dialog>
 
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 </div>
-<script src="model-benchmarks.js?v=20261116-listen13"></script>
-<script src="app.js?v=20261116-listen13"></script>
+<script src="model-benchmarks.js?v=20261118-listen17"></script>
+<script src="app.js?v=20261118-listen17"></script>
 </body>
 </html>
