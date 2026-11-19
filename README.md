@@ -6,7 +6,7 @@ a floating recording panel, and a writing workspace.
 Created by Sczitzo. Free to use under the MIT License: keep the copyright
 notice and credit when you reuse it.
 
-## Development snapshot — November 18, 2026 (build 20261118-listen17)
+## Development snapshot — November 18, 2026 (build 20261118-listen18)
 
 The Warm charcoal / Humanist interface follows the approved Quiet Instrument and
 Writer's Desk composition. The recording card uses a titled continuous border,
@@ -54,7 +54,7 @@ reuses an existing instance.
 python tests/run_tests.py --no-devices
 ```
 
-The 71 selected suites use disposable app data and block real network, microphone,
+The 72 selected suites use disposable app data and block real network, microphone,
 physical input and clipboard access. They do not establish live recognition or
 delivery quality. The separate Windows card harness is opt-in and uses an owned
 sample editor. See tests/README.md.
@@ -70,3 +70,5 @@ Licensed Mixkit WAV files are omitted; synthesized fallback sounds remain.
 ## License
 
 MIT. See LICENSE.
+
+The Lantern recording card now follows microphone volume with five bars and a gently wobbling circle. A soft click-through shadow adds depth while text and typing focus stay steady.

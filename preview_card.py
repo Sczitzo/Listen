@@ -8,14 +8,22 @@ import tkinter as tk
 
 from PIL import ImageTk
 from target_icon import window_icon
+from preview_shadow import CardShadow
 
 C = dict(bg='#2d2925', border='#a49380', fg='#f1e9dd', status='#c8bdaf',
          thumb_hover='#dcc09a', thumb='#a49380', accent='#dcc09a', on_accent='#282117')
-OVERLAY_WIDTH = 500
-HEADER_HEIGHT = 32
+OVERLAY_WIDTH = 380
+HEADER_HEIGHT = 110
 FOOTER_ROW_HEIGHT = 32
 FOOTER_PADDING = 12
 FOOTER_HEIGHT = FOOTER_ROW_HEIGHT + 2 * FOOTER_PADDING
+
+
+def voice_level(levels):
+    """Use the main meter's gain, with a perceptual response for quiet speech."""
+    recent = [value for value in levels[-5:]
+              if isinstance(value, (int, float)) and math.isfinite(value) and value > 0]
+    return math.sqrt(min(1., max(recent, default=0.) * 6))
 
 
 def client_animation_enabled():
@@ -73,7 +81,7 @@ def draw_card_border(canvas, width, height, top=1):
         return
     left, right, bottom = 1, width - 2, height - 2
     top = min(max(1, top), bottom - 1)
-    radius = min(12, (right - left) / 2, (bottom - top) / 2)
+    radius = min(24, (right - left) / 2, (bottom - top) / 2)
     options = dict(fill=C['border'], width=1, tags='card-border')
     for points in ((left + radius, top, right - radius, top),
                    (right, top + radius, right, bottom - radius),
@@ -111,7 +119,7 @@ def place_card(window, anchor, area=None, height=310, *, width=720, centered=Fal
     gdi.CreateRoundRectRgn.argtypes = [ctypes.c_int] * 6
     gdi.CreateRoundRectRgn.restype = wintypes.HANDLE
     gdi.DeleteObject.argtypes = [wintypes.HANDLE]
-    radius = min(26, width, height)
+    radius = min(50, width, height)
     region = gdi.CreateRoundRectRgn(0, 0, width + 1, height + 1, radius, radius)
     # On success the window owns the region.
     if region and not user.SetWindowRgn(hwnd, region, True):
@@ -232,6 +240,10 @@ class PreviewCard:
         self._on_cancel = on_cancel
         self._animation_enabled = client_animation_enabled()
         self._animation_id = None
+        self._voice_target = self._voice_energy = 0.
+        self._voice_time = None
+        self._voice_updated = 0.
+        self._shadow = CardShadow()
         self._recording_controls = False
         self._header_height = 0
         self._legend_height = 0
@@ -241,18 +253,24 @@ class PreviewCard:
         self.background = tk.Canvas(self.window, bg=C['bg'], highlightthickness=0, borderwidth=0, takefocus=False)
         self.background.pack(fill='both', expand=True)
         self.background.bind('<Configure>', self._draw_border)
-        self.legend = tk.Frame(self.background, bg=C['bg'], padx=6)
-        self.meter = tk.Canvas(self.legend, width=38, height=28, bg=C['bg'], highlightthickness=0, takefocus=False)
-        self.meter.pack(side='left', padx=(0, 10))
-        self.bars = [self.meter.create_line(5 + i * 7, 14, 5 + i * 7, 14, width=4,
+        self.legend = tk.Frame(self.background, bg=C['bg'])
+        self.meter = tk.Canvas(self.legend, width=84, height=84, bg=C['bg'], highlightthickness=0, takefocus=False)
+        self.meter.pack(side='left', padx=(0, 13))
+        self.ring = self.meter.create_line(0, 0, 1, 1, fill=C['accent'], width=1.8, smooth=True, splinesteps=12)
+        self.bars = [self.meter.create_line(28 + i * 7, 40, 28 + i * 7, 44, width=4,
                                           capstyle='round', fill=C['accent']) for i in range(5)]
-        self.heading = tk.Label(self.legend, text='Listen', bg=C['bg'], fg=C['fg'],
-                                font=('Candara', 12, 'bold'), anchor='w')
-        self.heading.pack(side='left', fill='x', expand=True)
+        self.titles = tk.Frame(self.legend, bg=C['bg'])
+        self.titles.pack(side='left', fill='x', expand=True)
+        self.heading = tk.Label(self.titles, text='Listen', bg=C['bg'], fg=C['fg'],
+                                font=('Candara', 17, 'bold'), anchor='w')
+        self.heading.pack(fill='x')
+        self.caption = tk.Label(self.titles, text='Live preview', bg=C['bg'], fg=C['status'],
+                                font=('Segoe UI', 10), anchor='w')
+        self.caption.pack(fill='x', pady=(4, 0))
         self.body = tk.Frame(self.background, bg=C['bg'])
         self.body.grid_rowconfigure(0, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
-        self.text = tk.Text(self.body, wrap='word', font=('Candara', 12), bg=C['bg'], fg=C['fg'],
+        self.text = tk.Text(self.body, wrap='word', font=('Candara', 16), bg=C['bg'], fg=C['fg'],
                             relief='flat', borderwidth=0, highlightthickness=0, padx=1, pady=0, takefocus=False,
                             spacing1=1, spacing3=2, state='disabled', exportselection=False,
                             cursor='arrow', width=1, height=1)
@@ -272,9 +290,10 @@ class PreviewCard:
         self.badge = tk.Label(self.footer, text='Listen', bg=C['bg'], fg=C['status'], font=('Candara', 10, 'bold'))
         self.badge.pack(side='left', padx=(0, 9))
         self.cancel_button = tk.Button(self.footer, text='Cancel', command=lambda: self._act('cancel'),
-                                       font=('Segoe UI', 10), bg=C['bg'], fg=C['status'],
+                                       font=('Segoe UI', 10), bg=C['bg'], fg=C['fg'],
                                        activebackground=C['bg'], activeforeground=C['fg'],
-                                       relief='flat', borderwidth=0, padx=10, pady=4, takefocus=False)
+                                       relief='flat', borderwidth=0, highlightthickness=1, highlightbackground=C['border'],
+                                       padx=12, pady=6, takefocus=False)
         self.cancel_button.bind('<ButtonPress-1>', lambda event: self._arm_action('cancel'))
         self.status = tk.Label(self.footer, bg=C['bg'], fg=C['status'], font=('Candara', 10),
                                anchor='e', justify='right', padx=2, pady=1, borderwidth=0)
@@ -285,8 +304,12 @@ class PreviewCard:
         self._pressed_action = (action, self._generation) if self._shown and self._recording_controls else None
 
     def _draw_border(self, _event=None):
-        draw_card_border(self.background, self.background.winfo_width(), self.background.winfo_height(),
-                         self._legend_height / 2 if self._header_height else 1)
+        width, height = self.background.winfo_width(), self.background.winfo_height()
+        draw_card_border(self.background, width, height)
+        self.background.delete('footer-divider')
+        if self._text:
+            y = height - self._footer_height - 2 * FOOTER_PADDING
+            self.background.create_line(1, y, width - 2, y, fill=C['border'], tags='footer-divider')
 
     def _act(self, action):
         pressed, self._pressed_action = self._pressed_action, None
@@ -295,30 +318,48 @@ class PreviewCard:
             if self._on_cancel(self._generation):
                 self.hide()
 
+    def _draw_voice(self, energy, now):
+        points = []
+        for step in range(49):
+            angle = step / 48 * math.tau
+            wobble = energy * .75 * (2.3 * math.sin(3 * angle + now * 4.4)
+                                     + 1.1 * math.sin(5 * angle - now * 3.2))
+            radius = 31 + energy * 1.3 + wobble
+            points.extend((42 + math.cos(angle) * radius, 42 + math.sin(angle) * radius))
+        self.meter.coords(self.ring, *points)
+        for index, bar in enumerate(self.bars):
+            half = 2 + energy * (6, 11, 15, 11, 6)[index] * (.85 + .15 * math.sin(now * 12 - index * .8))
+            x = 28 + index * 7
+            self.meter.coords(bar, x, 42 - half, x, 42 + half)
+
     def _animate(self):
         self._animation_id = None
         if not (self._animation_enabled and self._shown and self._recording_controls and self.window.winfo_viewable()):
             return
-        # A state cue, not an input-level waveform; its geometry never animates.
-        strength = .72 + .28 * (.5 - .5 * math.cos(time.monotonic() * math.pi))
-        channels = []
-        for offset in (1, 3, 5):
-            base, accent = int(C['bg'][offset:offset + 2], 16), int(C['accent'][offset:offset + 2], 16)
-            channels.append(round(base + (accent - base) * strength))
-        color = '#' + ''.join(f'{channel:02x}' for channel in channels)
-        for bar in self.bars:
-            self.meter.itemconfigure(bar, fill=color)
-        self._animation_id = self.window.after(80, self._animate)
+        now = time.monotonic()
+        elapsed = min(.1, max(0., now - self._voice_time)) if self._voice_time is not None else .04
+        self._voice_time = now
+        target = self._voice_target if now - self._voice_updated < .35 else 0.
+        response = .055 if target > self._voice_energy else .14
+        self._voice_energy += (target - self._voice_energy) * (1 - math.exp(-elapsed / response))
+        if self._voice_energy < .001:
+            self._voice_energy = 0.
+        self._draw_voice(self._voice_energy, now)
+        self._animation_id = self.window.after(40, self._animate)
 
     def _stop_animation(self):
         if self._animation_id is not None:
             try:
                 self.window.after_cancel(self._animation_id)
-                for bar in self.bars:
-                    self.meter.itemconfigure(bar, fill=C['accent'])
             except tk.TclError:
                 pass
             self._animation_id = None
+        self._voice_energy = self._voice_target = 0.
+        self._voice_time = None
+        try:
+            self._draw_voice(0., 0.)
+        except tk.TclError:
+            pass
 
     def _protect_activation(self):
         if self._native_hook is not None:
@@ -384,7 +425,7 @@ class PreviewCard:
             return
         previous, first = self._pending_fit
         self._pending_fit = None
-        chrome = 62 + self._footer_height - FOOTER_ROW_HEIGHT + self._header_height
+        chrome = 86 + self._footer_height - FOOTER_ROW_HEIGHT + self._header_height
         height = fitted_height(text_pixels(self.text), self._area, previous, chrome=chrome)
         try:
             self._place(self._area, height, True)
@@ -401,20 +442,22 @@ class PreviewCard:
         layout = area, width, height, has_text, self._footer_height, self._header_height, self._legend_height, self._legend_width
         if layout == self._layout:
             return
-        self.footer.place(x=14, rely=1, y=-(self._footer_height + FOOTER_PADDING),
-                          relwidth=1, width=-28, height=self._footer_height)
+        self.footer.place(x=22, rely=1, y=-(self._footer_height + FOOTER_PADDING),
+                          relwidth=1, width=-44, height=self._footer_height)
         if self._header_height:
-            self.legend.place(x=20, y=0, width=min(self._legend_width, max(1, width - 40)), height=self._legend_height)
+            self.legend.place(x=22, y=14, width=max(1, width - 44), height=self._legend_height)
         else:
             self.legend.place_forget()
         if has_text:
-            self.body.place(x=15, y=12 + self._header_height, relwidth=1, width=-30, relheight=1,
-                            height=-(30 + self._footer_height + self._header_height))
+            self.body.place(x=26, y=12 + self._header_height, relwidth=1, width=-48, relheight=1,
+                            height=-(54 + self._footer_height + self._header_height))
         else:
             self.body.place_forget()
         place_card(self.window, 0, area, height=height, width=width, centered=True)
         self._draw_border()
         self._layout, self._height = layout, height
+        if self._shown:
+            self._shadow.show(self._native_hwnd)
 
     def _target_icon(self, target):
         image = None
@@ -448,10 +491,14 @@ class PreviewCard:
                 self._pressed_action = None
                 self._generation, self._area, self._follow = generation, area, True
                 self._target_icon(target)
+                self._voice_energy = 0.
+                self._voice_time = None
             recording = phase == 'recording' or activity.startswith(('Starting', 'Listening'))
             listening = recording and (activity.startswith('Listening') or (enabled and not activity.startswith('Starting')))
             self._recording_controls = recording
             self.heading.configure(text='Listening' if listening else 'Starting')
+            self.caption.configure(text='Getting ready' if not listening else 'Preview paused' if enabled and snapshot.get('state') == 'paused'
+                                   else 'Live preview' if enabled else 'Recording')
             self.cancel_button.configure(state='normal' if recording and self._on_cancel else 'disabled')
             if recording and self._on_cancel:
                 self.cancel_button.pack(side='right', padx=(8, 0))
@@ -459,9 +506,9 @@ class PreviewCard:
                 self.cancel_button.pack_forget()
             if recording:
                 # A newly packed container still reports its previous requested size.
-                legend_height = max(self.meter.winfo_reqheight(), self.heading.winfo_reqheight())
-                legend_width = self.meter.winfo_reqwidth() + 10 + self.heading.winfo_reqwidth() + 12
-                header_height = max(HEADER_HEIGHT, legend_height + 8)
+                legend_height = max(self.meter.winfo_reqheight(), self.heading.winfo_reqheight() + self.caption.winfo_reqheight() + 4)
+                legend_width = self.meter.winfo_reqwidth() + 13 + max(self.heading.winfo_reqwidth(), self.caption.winfo_reqwidth())
+                header_height = max(HEADER_HEIGHT, legend_height + 28)
                 status = ''
                 self.status.pack_forget()
             else:
@@ -474,7 +521,7 @@ class PreviewCard:
             width = card_bounds(area, width=OVERLAY_WIDTH)[0]
             # Reserve the outer padding, badge gap, and label padding before wrapping.
             action_width = self.cancel_button.winfo_reqwidth() + 8 if recording and self._on_cancel else 0
-            wrap = max(1, width - 43 - self.badge.winfo_reqwidth() - action_width)
+            wrap = max(1, width - 59 - self.badge.winfo_reqwidth() - action_width)
             if (status, wrap) != self._status_layout:
                 self.status.configure(text=status, wraplength=wrap)
                 self._status_layout = status, wrap
@@ -486,7 +533,7 @@ class PreviewCard:
             if new_session or footer_delta or header_changed or bool(self._text) != bool(text):
                 extra = footer_height - FOOTER_ROW_HEIGHT
                 previous = self._height + footer_delta if self._text and not new_session else 0
-                height = fitted_height(0, area, previous, chrome=62 + extra + header_height) if text else FOOTER_HEIGHT + extra + header_height
+                height = fitted_height(0, area, previous, chrome=86 + extra + header_height) if text else FOOTER_HEIGHT + extra + header_height
                 self._place(area, height, bool(text))
             if new_session or text_changed:
                 self._replace(text)
@@ -502,19 +549,20 @@ class PreviewCard:
                 self._schedule_fit()
             elif not text:
                 self._pending_fit = None
-            for index, bar in enumerate(self.bars):
-                half = (4, 8, 11, 8, 4)[index] if listening else (2, 2, 4, 2, 2)[index]
-                x = 5 + index * 7
-                self.meter.coords(bar, x, 14 - half, x, 14 + half)
+            self._voice_target = voice_level(levels) if listening else 0.
+            self._voice_updated = time.monotonic()
             if recording and self._animation_enabled:
                 if self._animation_id is None:
                     self._animate()
             else:
                 self._stop_animation()
+            if self._shown:
+                self._shadow.show(self._native_hwnd)
         except (OSError, tk.TclError):
             self.hide()
 
     def hide(self):
+        self._shadow.hide()
         self._stop_animation()
         self._pressed_action = None
         self._pending_fit = None
@@ -528,6 +576,7 @@ class PreviewCard:
             self._target_icon(None)
 
     def destroy(self):
+        self._shadow.destroy()
         if self._destroyed:
             return
         self._destroyed = True

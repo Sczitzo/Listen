@@ -16,6 +16,8 @@ SUITES = ("ui_render_optimization_test.py", "speech_process_test.py", "speech_li
 
 SUITES = ("prompt_lab_review_test.py", "speech_model_settings_test.py", "parakeet_runtime_test.py", "parakeet_process_test.py", "model_settings_test.py", "ui_repair_test.py", "ui_repair_backend_test.py", "robustness_test.py", "speech_unload_test.py", "shell_surface_test.py", "brand_test.py", "natural_lists_test.py", "natural_lists_integration_test.py", "field_recovery_integration_test.py", "list_field_trials_integration_test.py", "list_field_trials_test.py", "multiline_native_harness_test.py", "multiline_delivery_integration_test.py", "verified_paste_test.py", "field_access_test.py", "spoken_list_integration_test.py", "spoken_list_test.py", "spoken_format_test.py", "long_draft_test.py", "long_draft_integration_test.py", "preview_card_integration_test.py", "transcript_preview_test.py", "draft_preview_test.py", "preview_card_test.py", "hotkey_responsiveness_test.py", "cleanup_integration_test.py", "cleanup_http_test.py", "cleanup_policy_test.py", "worker_recovery_latency_test.py", "test_runner_safety_test.py", "latency_contract_test.py", "tray_status_test.py") + SUITES
 
+SUITES = ("preview_shadow_test.py",) + SUITES
+
 # Windows Store Python may be inaccessible while its installed packages remain
 # usable by an existing interpreter of the same Python minor version.
 packages = []

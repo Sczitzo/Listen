@@ -7,6 +7,14 @@ import ctypes
 from ctypes import wintypes
 from types import SimpleNamespace
 from unittest.mock import patch
+import preview_card
+
+assert hasattr(preview_card, 'voice_level'), 'Lantern does not yet use the microphone levels'
+assert preview_card.voice_level(()) == 0
+assert preview_card.voice_level((0, -1, float('nan'), float('inf'))) == 0
+assert 0 < preview_card.voice_level((.01,)) < preview_card.voice_level((.1,)) <= 1
+assert preview_card.voice_level((100,)) == 1
+assert preview_card.voice_level((1,) + (0,) * 5) == 0, 'Old speech kept the cue moving during silence'
 
 class BorderCanvas:
     def __init__(self): self.lines, self.arcs, self.deleted, self.lowered = [], [], [], []
@@ -45,6 +53,7 @@ class Widget:
     def __init__(self, width=20, height=20):
         self.width, self.height, self.options, self.packed = width, height, {}, True
         self.colors, self.timers, self.cancelled = [], [], []
+        self.coordinates = {}
         self.viewable = True
     def configure(self, **options): self.options.update(options)
     def pack(self, **options): self.packed = True
@@ -58,7 +67,9 @@ class Widget:
     def count(self, *args): return (20,)
     def index(self, *args): return '1.0'
     def yview_moveto(self, *args): pass
-    def coords(self, *args): pass
+    def coords(self, item, *points):
+        if points: self.coordinates[item] = points
+        return self.coordinates.get(item, ())
     def itemconfigure(self, bar, **options): self.colors.append((bar, options))
     def after(self, interval, callback): self.timers.append((interval, callback)); return 'timer1'
     def after_cancel(self, timer): self.cancelled.append(timer)
@@ -68,16 +79,22 @@ class Widget:
     def update_idletasks(self): pass
     def destroy(self): self.destroyed = True
 
+class Shadow:
+    def show(self, hwnd): return True
+    def hide(self): pass
+    def destroy(self): pass
+
 # Tk's container request lags newly packed children until its next geometry idle.
 area = (0, 0, 1920, 1040)
 card = SimpleNamespace(_configure_native=lambda window: True, _protect_activation=lambda: True,
     window=Widget(), _generation=None, _area=None, _shown=True, _text='', _follow=True,
     _target_icon=lambda target: None, _on_cancel=lambda generation: True,
-    heading=Widget(84, 24), meter=Widget(38, 28), legend=Widget(1, 1),
+    heading=Widget(100, 28), caption=Widget(90, 18), meter=Widget(84, 84), legend=Widget(1, 1),
     cancel_button=Widget(70, 30), badge=Widget(32, 32), status=Widget(),
     text=Widget(450, 100), _header_height=0, _legend_height=0, _legend_width=0,
     _footer_height=28, _status_layout=None, _height=0, bars=range(5), _pending_fit=None,
-    _schedule_fit=lambda: None, _animation_enabled=False, _animation_id=None, _stop_animation=lambda: None, _icon=None)
+    _schedule_fit=lambda: None, _animation_enabled=False, _animation_id=None, _stop_animation=lambda: None, _icon=None,
+    _shadow=Shadow(), _native_hwnd=123)
 card.status.parent_window = card.window
 card._place = lambda area, height, has_text: setattr(card, '_height', height)
 card._replace = lambda value: setattr(card, '_text', value)
@@ -85,6 +102,9 @@ short_snapshot = dict(generation=1, phase='recording', active=True, text='A shor
 PreviewCard.update(card, short_snapshot, area=area)
 PreviewCard._fit_text(card)
 first_short_height = card._height
+with patch.object(card._shadow, 'show', return_value=False):
+    PreviewCard.update(card, short_snapshot, area=area)
+assert card._shown and card._text == short_snapshot['text'], 'Missing shadow hid the working card'
 assert card.status.options['text'] == '' and not card.status.packed, 'Recording instructions crowded the footer'
 card.legend.width, card.legend.height = 144, 28
 card._height = 520
@@ -107,18 +127,31 @@ for outcome, expected in (('copied', 'Text copied · Ctrl+V to paste'),
     assert card.status.options['text'] == expected and not card.cancel_button.packed
 
 animation = SimpleNamespace(_animation_enabled=True, _shown=True, _recording_controls=True,
-    window=Widget(), meter=Widget(), bars=range(5), _animation_id=None)
+    window=Widget(), meter=Widget(), ring=5, bars=range(5), _animation_id=None,
+    _voice_target=.7, _voice_energy=0., _voice_time=None, _voice_updated=0., _shadow=Shadow())
 animation._animate = lambda: PreviewCard._animate(animation)
+animation._draw_voice = lambda energy, now: PreviewCard._draw_voice(animation, energy, now)
 with patch('preview_card.time.monotonic', return_value=0):
     animation._animate()
-first_color = animation.meter.colors[0][1]['fill']
-assert len(animation.meter.colors) == 5 and animation.window.timers[0][0] == 80
+first_ring = animation.meter.coords(animation.ring)
+first_bars = [animation.meter.coords(bar) for bar in animation.bars]
+assert len(first_ring) == 98 and animation.window.timers[0][0] == 40
+assert all(4 <= value <= 80 for value in first_ring), 'Wobble escaped the badge'
+with patch('preview_card.time.monotonic', return_value=.1):
+    animation._animate()
+assert animation.meter.coords(animation.ring) != first_ring, 'Speaking did not wobble the circle'
+assert [animation.meter.coords(bar) for bar in animation.bars] != first_bars, 'Speaking did not move the bars'
 PreviewCard._stop_animation(animation)
 assert animation.window.cancelled == ['timer1'] and animation._animation_id is None
-animation.meter.colors.clear()
-with patch('preview_card.time.monotonic', return_value=1):
+resting_ring = animation.meter.coords(animation.ring)
+with patch('preview_card.time.monotonic', return_value=2):
     animation._animate()
-assert animation.meter.colors[0][1]['fill'] != first_color, 'The state cue did not breathe'
+assert animation.meter.coords(animation.ring) == resting_ring, 'Silence still wobbled'
+assert all(points[3] - points[1] == 4 for bar in animation.bars for points in [animation.meter.coords(bar)])
+animation._voice_target, animation._voice_updated = 1., 0.
+with patch('preview_card.time.monotonic', return_value=3):
+    animation._animate()
+assert animation._voice_energy == 0., 'A stale volume sample kept the circle moving'
 PreviewCard._stop_animation(animation)
 animation._animation_enabled = False
 animation.window.timers.clear()
@@ -140,6 +173,11 @@ animation._destroyed, animation._fit_id, animation._native_hook = False, None, N
 PreviewCard.destroy(animation)
 PreviewCard.destroy(animation)
 assert animation._animation_id is None and animation.window.destroyed
+with patch.object(animation.meter, 'coords', side_effect=preview_card.tk.TclError('Destroyed canvas')):
+    PreviewCard._stop_animation(animation)
+    animation._destroyed = False
+    PreviewCard.destroy(animation)
+assert animation._destroyed and animation._animation_id is None
 
 class AnimationPreference:
     def __init__(self, enabled, success=True): self.enabled, self.success = enabled, success
