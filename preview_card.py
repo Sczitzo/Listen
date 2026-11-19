@@ -13,9 +13,9 @@ from preview_shadow import CardShadow
 C = dict(bg='#2d2925', border='#a49380', fg='#f1e9dd', status='#c8bdaf',
          thumb_hover='#dcc09a', thumb='#a49380', accent='#dcc09a', on_accent='#282117')
 OVERLAY_WIDTH = 380
-HEADER_HEIGHT = 110
+HEADER_HEIGHT = 96
 FOOTER_ROW_HEIGHT = 32
-FOOTER_PADDING = 12
+FOOTER_PADDING = 8
 FOOTER_HEIGHT = FOOTER_ROW_HEIGHT + 2 * FOOTER_PADDING
 
 
@@ -255,22 +255,22 @@ class PreviewCard:
         self.background.bind('<Configure>', self._draw_border)
         self.legend = tk.Frame(self.background, bg=C['bg'])
         self.meter = tk.Canvas(self.legend, width=84, height=84, bg=C['bg'], highlightthickness=0, takefocus=False)
-        self.meter.pack(side='left', padx=(0, 13))
+        self.meter.pack(side='left', padx=(0, 10))
         self.ring = self.meter.create_line(0, 0, 1, 1, fill=C['accent'], width=1.8, smooth=True, splinesteps=12)
         self.bars = [self.meter.create_line(28 + i * 7, 40, 28 + i * 7, 44, width=4,
                                           capstyle='round', fill=C['accent']) for i in range(5)]
         self.titles = tk.Frame(self.legend, bg=C['bg'])
         self.titles.pack(side='left', fill='x', expand=True)
         self.heading = tk.Label(self.titles, text='Listen', bg=C['bg'], fg=C['fg'],
-                                font=('Candara', 17, 'bold'), anchor='w')
+                                font=('Candara', 12, 'bold'), anchor='w')
         self.heading.pack(fill='x')
         self.caption = tk.Label(self.titles, text='Live preview', bg=C['bg'], fg=C['status'],
                                 font=('Segoe UI', 10), anchor='w')
-        self.caption.pack(fill='x', pady=(4, 0))
+        self.caption.pack(fill='x', pady=(2, 0))
         self.body = tk.Frame(self.background, bg=C['bg'])
         self.body.grid_rowconfigure(0, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
-        self.text = tk.Text(self.body, wrap='word', font=('Candara', 16), bg=C['bg'], fg=C['fg'],
+        self.text = tk.Text(self.body, wrap='word', font=('Candara', 12), bg=C['bg'], fg=C['fg'],
                             relief='flat', borderwidth=0, highlightthickness=0, padx=1, pady=0, takefocus=False,
                             spacing1=1, spacing3=2, state='disabled', exportselection=False,
                             cursor='arrow', width=1, height=1)
@@ -425,7 +425,7 @@ class PreviewCard:
             return
         previous, first = self._pending_fit
         self._pending_fit = None
-        chrome = 86 + self._footer_height - FOOTER_ROW_HEIGHT + self._header_height
+        chrome = 62 + self._footer_height - FOOTER_ROW_HEIGHT + self._header_height
         height = fitted_height(text_pixels(self.text), self._area, previous, chrome=chrome)
         try:
             self._place(self._area, height, True)
@@ -442,15 +442,15 @@ class PreviewCard:
         layout = area, width, height, has_text, self._footer_height, self._header_height, self._legend_height, self._legend_width
         if layout == self._layout:
             return
-        self.footer.place(x=22, rely=1, y=-(self._footer_height + FOOTER_PADDING),
-                          relwidth=1, width=-44, height=self._footer_height)
+        self.footer.place(x=14, rely=1, y=-(self._footer_height + FOOTER_PADDING),
+                          relwidth=1, width=-28, height=self._footer_height)
         if self._header_height:
-            self.legend.place(x=22, y=14, width=max(1, width - 44), height=self._legend_height)
+            self.legend.place(x=14, y=6, width=max(1, width - 28), height=self._legend_height)
         else:
             self.legend.place_forget()
         if has_text:
-            self.body.place(x=26, y=12 + self._header_height, relwidth=1, width=-48, relheight=1,
-                            height=-(54 + self._footer_height + self._header_height))
+            self.body.place(x=16, y=6 + self._header_height, relwidth=1, width=-32, relheight=1,
+                            height=-(30 + self._footer_height + self._header_height))
         else:
             self.body.place_forget()
         place_card(self.window, 0, area, height=height, width=width, centered=True)
@@ -507,8 +507,8 @@ class PreviewCard:
             if recording:
                 # A newly packed container still reports its previous requested size.
                 legend_height = max(self.meter.winfo_reqheight(), self.heading.winfo_reqheight() + self.caption.winfo_reqheight() + 4)
-                legend_width = self.meter.winfo_reqwidth() + 13 + max(self.heading.winfo_reqwidth(), self.caption.winfo_reqwidth())
-                header_height = max(HEADER_HEIGHT, legend_height + 28)
+                legend_width = self.meter.winfo_reqwidth() + 10 + max(self.heading.winfo_reqwidth(), self.caption.winfo_reqwidth())
+                header_height = max(HEADER_HEIGHT, legend_height + 12)
                 status = ''
                 self.status.pack_forget()
             else:
@@ -521,7 +521,7 @@ class PreviewCard:
             width = card_bounds(area, width=OVERLAY_WIDTH)[0]
             # Reserve the outer padding, badge gap, and label padding before wrapping.
             action_width = self.cancel_button.winfo_reqwidth() + 8 if recording and self._on_cancel else 0
-            wrap = max(1, width - 59 - self.badge.winfo_reqwidth() - action_width)
+            wrap = max(1, width - 43 - self.badge.winfo_reqwidth() - action_width)
             if (status, wrap) != self._status_layout:
                 self.status.configure(text=status, wraplength=wrap)
                 self._status_layout = status, wrap
@@ -533,7 +533,7 @@ class PreviewCard:
             if new_session or footer_delta or header_changed or bool(self._text) != bool(text):
                 extra = footer_height - FOOTER_ROW_HEIGHT
                 previous = self._height + footer_delta if self._text and not new_session else 0
-                height = fitted_height(0, area, previous, chrome=86 + extra + header_height) if text else FOOTER_HEIGHT + extra + header_height
+                height = fitted_height(0, area, previous, chrome=62 + extra + header_height) if text else FOOTER_HEIGHT + extra + header_height
                 self._place(area, height, bool(text))
             if new_session or text_changed:
                 self._replace(text)
