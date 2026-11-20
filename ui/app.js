@@ -260,16 +260,13 @@ function chip(key, label, icon) {
 }
 function renderChips() {
   const a = document.activeElement, box = a?.closest?.(".chips")?.id;
-  const sel = a?.dataset?.key ? `[data-key="${a.dataset.key}"]` : a?.dataset?.toggle ? `[data-toggle="${a.dataset.toggle}"]` : "";
-  stableHTML($("#chips-dictate"), chip("style", "Style", "i-sparkle") +
-    `<button class="chip toggle ${settings.cleanup ? "" : "off"}" data-toggle="cleanup"><svg class="ico" aria-hidden="true"><use href="#i-sparkle"/></svg>AI clean-up ${settings.cleanup ? "on" : "off"}</button>`);
+  const sel = a?.dataset?.key ? `[data-key="${a.dataset.key}"]` : "";
   const cloudSelected = settings.engine === "anthropic" || settings.judge === "anthropic";
   const cloudActive = cloudSelected && settings.cloud_enabled;
   const processing = cloudActive ? "Cloud API processing · paid calls"
     : cloudSelected ? "Local processing · cloud use is disabled" : "Local processing · stays on this computer";
   stableHTML($("#chips-lab"), `<span class="processing-label">${processing}</span>` + chip("target", "Target", "i-clipboard") + chip("engine", "Engineer", "i-sparkle") + chip("judge", "Judge with", "i-chart") + (settings.judge === "anthropic" ? chip("judge_model", "Cloud judge", "i-chart") : ""));
   $$(".chip select").forEach(s => s.onchange = () => setSetting(s.dataset.key, s.value));
-  $$(".chip[data-toggle]").forEach(b => b.onclick = () => setSetting(b.dataset.toggle, !settings[b.dataset.toggle]));
   const name = k => Object.entries(options[k] || {}).find(([, v]) => v === settings[k])?.[0] || settings[k];
   const hotkeyName = String(name("hotkey") || "Right Ctrl");
   const keys = hotkeyName.split(" + "), keyGroup = $("#hero-key");
@@ -1243,7 +1240,8 @@ function setStatus(st) {
   }
   const announcement=$("#recording-announcement");if(announcement.textContent!==label)announcement.textContent=label;
   setDisplayedProperty($("#rail-status .dot"), "className", "dot " + cls);
-  setDisplayedProperty($("#rail-status"), "title", label);
+  const processingMode = $("#rail-processing")?.textContent;
+  setDisplayedProperty($("#rail-status"), "title", processingMode ? `${label} · ${processingMode}` : label);
   document.body.classList.toggle("recording", s === "recording");
   document.body.classList.toggle("recording-starting", recordingStarting);
   setDisplayedProperty($("#btn-finish"), "disabled", s!=="recording");

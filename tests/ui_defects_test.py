@@ -49,7 +49,10 @@ check('select option styled', '.chip select option' in css)
 check('single .page flex rule', len(re.findall(r'(?m)^\.page \{', css)) == 1 and '.main > .page' not in css)
 check('no dead rm/prompt css', '.list li .rm' not in css and '.prompt.recording' not in css)
 check('card titles are h2', re.search(r'<div class="card-title">(?!<h2)', html) is None)
-check('quit uses svg not glyph', '⏻' not in html and 'href="#i-power"' in html)
+check('quit is a text-only navigation control', re.search(r'<button[^>]+id="btn-quit"[^>]*><span>Quit</span></button>', html) is not None)
+check('Dictate keeps an accessible heading and places status by recording controls', '<h1 class="sr-only" tabindex="-1">Dictate</h1>' in html and re.search(r'<div class="recording-summary">[\s\S]+?id="status-dictate"', html) is not None)
+check('Dictate Recent starts collapsed with direct access to History', re.search(r'<details class="card frame recent">\s*<summary>Recent</summary>', html) is not None and 'class="link recent-history" data-goto="history"' in html)
+check('Dictate reuses Settings for cleanup and style', 'id="chips-dictate"' not in html and 'control("cleanup")' in js and '["style", "target", "cloud_enabled"].map(row)' in js)
 check('history word count is spelled out, never a bare "w"', 'function wordLabel' in js and '.length}w' not in js and '}w${e.cost' not in js)
 check('finish/cancel stay visible (disabled) while idle', all(re.search(r'<button\b[^>]*id="'+key+r'"[^>]*\bdisabled', html) for key in ('btn-finish','btn-cancel')))
 check('how-it-works disclosure', '<details class="how"><summary>How it works</summary>' in html)
@@ -80,12 +83,12 @@ async function run(name,fn){try{await fn();}catch(e){failed.push(name+': '+Strin
 const tick=()=>new Promise(r=>setImmediate(r));
 
 (async()=>{
-await run('chip focus kept after toggle re-render',async()=>{
- const R=registry(),active=el();active.dataset.toggle='cleanup';active.closest=s=>s==='.chips'?{id:'chips-dictate'}:null;
+await run('Prompt Lab chip focus kept after re-render',async()=>{
+ const R=registry(),active=el();active.dataset.key='target';active.closest=s=>s==='.chips'?{id:'chips-lab'}:null;
  const c=vm.createContext({document:{activeElement:active},settings:{cleanup:true,hotkey:'ctrl_r',style:'tighten'},options:{hotkey:{'Right Ctrl':'ctrl_r'},style:{},target:{},engine:{},judge:{}},esc:x=>String(x),$:R,$$:()=>[],setSetting(){}});
  vm.runInContext(cut('const htmlCache','// ---------- state')+cut('function chip(','async function setSetting('),c);
  vm.runInContext('renderChips()',c);
- assert.equal(R('#chips-dictate [data-toggle="cleanup"]').focusCount,1,'keyboard focus was not restored to the toggle chip');
+ assert.equal(R('#chips-lab [data-key="target"]').focusCount,1,'keyboard focus was not restored to the target chip');
  assert(R('#hero-key').innerHTML.includes('<kbd>Right Ctrl</kbd>'),'the single key lost its side');
  const longer='Ctrl + Alt + Shift + F8';
  c.options.hotkey[longer]='combo';
