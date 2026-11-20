@@ -193,6 +193,9 @@ h1 { font-size: 29px; font-weight: 600; margin: 0; letter-spacing: -0.025em; lin
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--lift); }
 .stat { padding: 12px 16px; } .stat + .stat { border-left: 1px solid var(--line); }
 .stat .v { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.metric-reel { display:inline-block; vertical-align:top; block-size:1lh; overflow:hidden; mask-image:linear-gradient(transparent, #000 12% 88%, transparent); }
+.metric-strip, .metric-strip > span { display:block; user-select:none; }
+@media (prefers-reduced-motion:reduce) { .metric-strip { transform:translateY(-80%) !important; } }
 .stat .l { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .stat .s { font-size: 11px; color: var(--faint); }
 .search { position: relative; } .search .ico { position: absolute; left: 10px; top: 9px; color: var(--muted); } .search .input { padding-left: 32px; resize: none; }

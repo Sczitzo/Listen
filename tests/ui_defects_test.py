@@ -137,14 +137,27 @@ await run('Finish is primary while recording; Finish/Cancel stay visible but dis
 });
 await run('history caps at 200 rows, Show more, 200 ms debounce, index lookup',async()=>{
  const R=registry(),timers=new Map();let n=0,copied=[];
+ const durations=[];
+ R('#stats').querySelectorAll=()=>Array.from(R('#stats').innerHTML.matchAll(/class="metric-strip"/g),()=>({
+  animate:(_frames,timing)=>{durations.push(timing.duration);return {};}
+ }));
  const entries=Array.from({length:450},(_,i)=>({ts:'2026-09-12T10:12:00',kind:'dictate',text:'entry '+i,raw:'raw '+i,cost:0}));
  const btn=el();btn.dataset.historyCopy='clean';btn.closest=()=>({dataset:{i:'3'}});
  const c=vm.createContext({console,esc:x=>String(x),$:s=>s==='#hist-more'?(R('#hist-list').innerHTML.includes('id="hist-more"')?R(s):null):s==='#clear-filter'?null:R(s),
-  $$:(s)=>s==='[data-history-copy]'?[btn]:[],toast(){},
+  $$:(s)=>s==='[data-history-copy]'?[btn]:[],toast(){},page:'history',window:{matchMedia:()=>({matches:false})},
   api:()=>({get_history:async()=>entries,get_stats:async()=>({today:1,week:1,words_week:1,minutes_week:1,wpm:1,latency:1,spend_month:0}),copy_text:async t=>{copied.push(t);return true;}}),
   setTimeout:(fn,ms)=>{timers.set(++n,{fn,ms});return n;},clearTimeout:id=>timers.delete(id)});
  vm.runInContext(cut('function fmtTs(','async function clearPrivate('),c);
  await vm.runInContext('loadHistory()',c);
+ assert(!R('#stats').innerHTML.includes('metric-strip'),'background refresh started a roll');
+ await vm.runInContext('Promise.all([loadHistory(true),loadHistory()])',c);
+ assert.deepEqual(durations,[1500,1500,1500,1500,1500],'each digit needs its own entry roll');
+ assert(R('#stats').innerHTML.includes('class="sr-only">1.0s</span>'),'exact processing time is missing');
+ await vm.runInContext('loadHistory()',c);
+ assert.equal(durations.length,5,'unchanged data restarted the roll');
+ c.window.matchMedia=()=>({matches:true});
+ await vm.runInContext('loadHistory(true)',c);
+ assert(!R('#stats').innerHTML.includes('metric-strip'),'reduced motion created a roll');
  const rows=()=>(R('#hist-list').innerHTML.match(/<li (?!class="empty")/g)||[]).length;
  assert.equal(rows(),200,'history rendered '+rows()+' rows');
  assert(R('#hist-list').innerHTML.includes('Show more'));

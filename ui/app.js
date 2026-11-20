@@ -209,7 +209,8 @@ function askConfirm(message) {
 // ---------- pages ----------
 function show(p, focus = true) {
   for (const panel of $$(".lab-popover:popover-open")) panel.hidePopover();
-  if (page !== p) {
+  const entering = page !== p;
+  if (entering) {
     $(".main").scrollTop = 0;
     if (feedbackRequest) feedbackRequest.leftLab = true;
   }
@@ -217,7 +218,7 @@ function show(p, focus = true) {
   $$(".page").forEach(el => el.classList.toggle("active", el.dataset.page === p));
   $$(".rail-btn").forEach(b => { const on = b.dataset.page === p; b.classList.toggle("active", on); if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
   closeMore(false);
-  if (p === "history") loadHistory();
+  if (p === "history") loadHistory(entering);
   if (p === "settings") renderSettings();
   if (focus) (p === "lab" ? $("#draft") : $(`.page[data-page="${p}"] h1`))?.focus();
 }
@@ -486,13 +487,44 @@ function renderHistory() {
   bindRows($("#hist-list"), histShown); if($("#clear-filter")) $("#clear-filter").onclick=()=> { $("#hist-search").value=""; histLimit=HIST_PAGE; renderHistory(); };
   if($("#hist-more")) $("#hist-more").onclick=()=> { histLimit+=HIST_PAGE; renderHistory(); $("#hist-more")?.focus(); };
 }
-async function loadHistory() {
-  histAll = await api().get_history();
+const historyDigits = Array.from((9876543210).toLocaleString(undefined, {useGrouping:false})).reverse();
+function historyMetric(value, animate) {
+  const exact = esc(value);
+  if (!animate) return exact;
+  let rolling = false;
+  const strips = Array.from(String(value), character => {
+    const digit = historyDigits.indexOf(character);
+    if (digit < 0) return esc(character);
+    rolling = true;
+    const digits = Array.from({length:5}, (_, i) => `<span>${esc(historyDigits[(digit + i + 6) % 10])}</span>`).join("");
+    return `<span class="metric-reel"><span class="metric-strip">${digits}</span></span>`;
+  }).join("");
+  return rolling ? `<span class="sr-only">${exact}</span><span aria-hidden="true">${strips}</span>` : exact;
+}
+let historyRequest = 0, historyEntryPending = false, historyStatsKey;
+async function loadHistory(entering = false) {
+  historyEntryPending ||= entering;
+  const request = ++historyRequest;
+  const history = await api().get_history();
+  if (request !== historyRequest) return;
+  histAll = history;
   renderHistory();
   const st = await api().get_stats();
-  const stat = (v, l, s = "") => `<div class="stat"><div class="v">${v}</div><div class="l">${l}</div><div class="s">${s}</div></div>`;
-  $("#stats").innerHTML = stat(st.today, "dictations today", `${st.week} this week`) + stat(st.words_week.toLocaleString(), "words this week", `${st.minutes_week.toFixed(1)} min of speech`) +
+  if (request !== historyRequest || page !== "history") return;
+  const key = JSON.stringify(st);
+  if (!historyEntryPending && key === historyStatsKey) return;
+  const animate = historyEntryPending && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  historyEntryPending = false;
+  historyStatsKey = key;
+  const stat = (v, l, s = "") => `<div class="stat"><div class="v">${historyMetric(v, animate)}</div><div class="l">${l}</div><div class="s">${s}</div></div>`;
+  const stats = $("#stats");
+  stats.innerHTML = stat(st.today, "dictations today", `${st.week} this week`) + stat(st.words_week.toLocaleString(), "words this week", `${st.minutes_week.toFixed(1)} min of speech`) +
     stat(st.wpm || "–", "words per minute", "speaking rate") + stat(st.latency ? st.latency.toFixed(1) + "s" : "–", "Processing and delivery attempt", `$${st.spend_month.toFixed(2)} estimated API cost this month${st.spend_unknown ? ` · ${st.spend_unknown} unpriced calls` : ""}${st.spend_note ? " · " + esc(st.spend_note) : ""}`);
+  if (animate) for (const strip of stats.querySelectorAll(".metric-strip")) {
+    const reel = strip.animate([{transform:"none"}, {transform:"translateY(-80%)"}],
+      {duration:1500,easing:"cubic-bezier(.2,.5,.4,1)",fill:"both"});
+    reel.onfinish = () => strip.parentElement.replaceWith(strip.lastElementChild.textContent);
+  }
 }
 $("#hist-search").oninput = () => { clearTimeout(histTimer); histTimer = setTimeout(() => { histLimit = HIST_PAGE; renderHistory(); }, 200); };
 async function clearPrivate(scope) {
