@@ -26,7 +26,7 @@ jobs:
         shell: pwsh
         run: |
           $candidate = Join-Path $env:RUNNER_TEMP 'installer/Listen-Windows-x64.msi'
-          & ./packaging/windows/test_installer.ps1 -Installer $candidate -Work (Join-Path $env:RUNNER_TEMP 'Listen clean test') -RunDesktop
+          & ./packaging/windows/test_installer.ps1 -Installer $candidate -Work (Join-Path $env:RUNNER_TEMP 'Listen clean test')
       - name: Verify upgrade from the published installer
         shell: pwsh
         run: |
