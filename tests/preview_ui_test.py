@@ -188,7 +188,8 @@ async function controlsAndGrouping(){
  assert(stages.every((id,i)=>markup.includes(`id="${id}"`)&&(!i||markup.indexOf(`id="${id}"`)>markup.indexOf(`id="${stages[i-1]}"`))));
  assert(markup.indexOf('id="stage-cleanup"')<markup.indexOf('id="local-model"')&&markup.indexOf('id="local-model"')<markup.indexOf('id="stage-writing"'));
  assert(markup.indexOf('Recording preferences')<markup.indexOf('data-toggle="live_preview"'));
- assert.match(markup,/raw, provisional speech locally/);assert.equal(h.focusCalls(),0);
+ assert.match(markup,/See words on this computer/);
+ assert.match(markup,/final words can change/);assert.equal(h.focusCalls(),0);
 }
 (async()=>{await presentation();await clearFences();await stopFences();await settingFences();await controlsAndGrouping();
  console.log('preview UI: actual delayed handlers, clear/off-on/version fences, full literal text, retained final stages, stable presentation and capture controls passed');

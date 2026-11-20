@@ -308,7 +308,10 @@ async function setSetting(k, v) {
     settings=settingPreviewVersion===previewSettingVersion?latest:{...latest,live_preview:settings.live_preview};
     renderChips();
     if (k === "hotkey") setStatus(S);
-    if (page === "settings") syncSettings();
+    if (page === "settings") {
+      syncSettings();
+      if (k === "microphone") await populateMicrophones();
+    }
   } catch {
     toast("Setting status could not be refreshed. Reopen Settings to check your choice.",true);
   } finally {
@@ -320,16 +323,16 @@ async function setSetting(k, v) {
 
 // ---------- settings page ----------
 const SETTING_ROWS = [
-  ["hotkey", "Hotkey", "Press to start or finish. You can also hold and release. In Prompt Lab, it dictates into the focused box."],
-  ["speech_model", "Speech recognition model", "Choose a model installed on this computer. Finish or cancel a recording before changing it.", "speech"],
-  ["microphone", "Microphone", "Reconnect your saved microphone or explicitly choose the Windows default. Changes apply to the next recording."],
-  ["live_preview", "Live transcript preview", "Show raw, provisional speech locally while recording. Updates may pause when processing is slow; final text is generated when you finish.", "toggle"],
-  ["cleanup", "AI clean-up", "Fix grammar and fillers with the local model", "toggle"], ["style", "Clean-up style", "How much the wording is tightened"],
-  ["local_model", "AI text model (Ollama)", "Shared by text cleanup and local Prompt Lab writing and scoring. Speech recognition uses the separate model above.", "model"],
-  ["target", "Prompt target", "Shapes how prompts are structured"], ["engine", "Engineer with", "Writes and refines prompts with Claude via API, or your selected local model"],
-  ["judge", "Judge with", "Scores revisions against current guidance and writes the improved version"],
-  ["judge_model", "Cloud judge model", "Haiku is the budget choice. Sonnet balances speed and detail. Opus has higher rates. Applies when Claude and cloud processing are enabled."],
-  ["cloud_enabled", "Allow cloud processing", "Sends Prompt Lab and voice-triggered prompt engineering text and relevant preferences to the selected API provider. Ordinary dictation cleanup stays local. Multiple paid calls may be made.", "toggle"],
+  ["hotkey", "Hotkey", "Press to start or finish, or hold and release. In Prompt Lab, it dictates into the focused box."],
+  ["speech_model", "Speech recognition model", "Choose the AI that turns your voice into words. Finish or cancel a recording before changing it.", "speech"],
+  ["microphone", "Microphone", "Choose a microphone for your next recording. Listen remembers it."],
+  ["live_preview", "Live transcript preview", "See words on this computer. Updates may pause, and final words can change.", "toggle"],
+  ["cleanup", "AI clean-up", "Tidy grammar and remove filler words using AI on this computer.", "toggle"], ["style", "How much to tidy", "Choose how much Listen changes the wording."],
+  ["local_model", "AI text model (Ollama)", "Tidies your words on this computer. It also writes and checks Prompt Lab prompts when you choose local AI. Speech uses a separate AI.", "model"],
+  ["target", "Prompt for", "Choose the app this prompt is for."], ["engine", "Writing AI", "Choose the AI that writes and improves your prompts."],
+  ["judge", "Checking AI", "Scores your prompt, then writes a better version."],
+  ["judge_model", "Claude AI for checking", "Haiku costs less. Sonnet balances cost and detail. Opus costs more. Used only with Claude when paid cloud is on."],
+  ["cloud_enabled", "Allow paid cloud AI", "Prompts you write or speak, your instructions, and useful preferences can be sent to your chosen online AI. One request can use paid AI more than once. Everyday dictation cleanup runs on this computer.", "toggle"],
 ];
 let speechModelSavePending=false, speechOptionsVersion=0;
 const swHTML = on => `<span class="sw-t" aria-hidden="true">${on ? "On" : "Off"}</span>`;
@@ -338,6 +341,33 @@ function setSwitch(b, on) {
   const t = b.querySelector(".sw-t"); if (t) t.textContent = on ? "On" : "Off";
 }
 // Built once when the page opens. Later changes go through syncSettings so controls (and keyboard focus) are kept.
+let microphoneOptionsVersion=0;
+async function populateMicrophones() {
+  const select = $('#settings-grid select[data-key="microphone"]');
+  if (!select || !api().get_microphones) return;
+  const version=++microphoneOptionsVersion;
+  try {
+    const microphones=await api().get_microphones();
+    if(version!==microphoneOptionsVersion||select!==$('#settings-grid select[data-key="microphone"]'))return;
+    const saved=settings.microphone ?? null;
+    options.microphone=microphones;
+    select.innerHTML=Object.entries(microphones).map(([name,value])=>`<option value="${esc(value??'')}"${saved===value?' selected':''}>${esc(name)}</option>`).join('');
+    const missing=saved!=null&&!Object.values(microphones).includes(saved);
+    if(missing)select.add(new Option('Saved microphone not connected',saved,true,true));
+    const note = $("#microphone-note");
+    note.hidden = !missing;
+    $("#use-default-microphone").hidden = !missing;
+    select.setAttribute('aria-invalid',String(missing));
+    if(missing)select.setAttribute('aria-describedby','microphone-note');else select.removeAttribute('aria-describedby');
+    note.querySelector('p').innerHTML='<strong>Saved microphone not connected.</strong> Listen is still set to this microphone. Connect it again or choose another one.';
+  } catch {
+    if(version!==microphoneOptionsVersion||select!==$('#settings-grid select[data-key="microphone"]'))return;
+    const note = $("#microphone-note");
+    note.hidden = false;
+    $("#use-default-microphone").hidden = true;
+    note.querySelector('p').textContent='Could not check your microphones. Your saved choice is kept. Try opening Settings again.';
+  }
+}
 function renderSettings() {
   const rows = new Map(SETTING_ROWS.map(row => [row[0], row]));
   const speechChoices = () => {
@@ -349,32 +379,38 @@ function renderSettings() {
     const [k, l, , t] = rows.get(key);
     return t === "toggle" ? `<button class="switch ${settings[k] ? "on" : ""}" data-toggle="${k}" role="switch" aria-checked="${!!settings[k]}" aria-label="${l}">${swHTML(!!settings[k])}</button>`
       : t === "speech" ? `<select id="speech-model" data-key="speech_model" data-available="${speechChoices().available}" aria-label="${l}" aria-describedby="speech-stage-summary speech-model-note speech-model-status"${speechChoices().available&&!speechModelSavePending?"":" disabled"}>${speechChoices().html}</select>`
-      : t === "model" ? `<select id="local-model" aria-label="${l}" aria-describedby="model-status"></select><button class="btn quiet" id="refresh-models">Refresh</button>`
+      : t === "model" ? `<select id="local-model" aria-label="${l}" aria-describedby="model-status"></select><button class="btn quiet" id="refresh-models">Refresh list</button>`
       : `<select data-key="${k}" aria-label="${l}">${Object.entries(options[k] || {}).map(([n, v]) => `<option value="${esc(v)}"${settings[k] === v ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
   };
   const row = k => `<div class="setting"><div><div class="l">${rows.get(k)[1]}</div><div class="d">${rows.get(k)[2]}</div></div><div class="setting-controls">${control(k)}</div></div>`;
-  $("#settings-grid").innerHTML = `<p class="settings-intro">Speech captures your words. AI cleanup gives them readable structure. Prompt Lab writing and review are separate steps.</p>
-    <div class="model-stages">
-      <section class="stage-row" aria-labelledby="stage-speech"><div><h2 id="stage-speech">Speech recognition</h2><p>Turns your voice into words.</p></div><div class="stage-choice">${control("speech_model")}<p id="speech-stage-summary"></p><p id="speech-model-note">${esc(options.speech_model_note || rows.get("speech_model")[2])}</p><p id="speech-model-status" role="status"></p></div></section>
-      <section class="stage-row" aria-labelledby="stage-cleanup"><div><h2 id="stage-cleanup">AI cleanup</h2><p>Tidies wording and spoken structure.</p></div><div class="stage-choice"><div class="setting-controls">${control("local_model")}</div><p id="model-status" role="status"></p><p id="model-benchmark-summary"></p><p>Runs locally. This text model is also used by any local Prompt Lab stage.</p><div class="cleanup-preference"><span>AI clean-up</span>${control("cleanup")}</div><details class="model-benchmarks"><summary>Benchmarks and recommendation</summary><div id="model-benchmark-content"></div></details></div></section>
-      <section class="stage-row" aria-labelledby="stage-writing"><div><h2 id="stage-writing">Prompt writing</h2><p>Writes suggestions for your review.</p></div><div class="stage-choice">${control("engine")}<p data-route-summary="engine"></p></div></section>
-      <section class="stage-row" aria-labelledby="stage-review"><div><h2 id="stage-review">Prompt review</h2><p>Assesses the current draft.</p></div><div class="stage-choice"><div class="setting-controls">${control("judge")}${control("judge_model")}</div><p data-route-summary="judge"></p></div></section>
-    </div><h2 class="preference-heading">Recording preferences</h2>${["hotkey", "microphone", "live_preview"].map(row).join("")}
-    <h2 class="preference-heading">Text and prompt preferences</h2>${["style", "target", "cloud_enabled"].map(row).join("")}`;
+  $("#settings-grid").innerHTML = `<section class="recording-settings" aria-label="Recording preferences">${row("hotkey")}${row("microphone")}
+    <div class="microphone-note" id="microphone-note" role="status" hidden><p><strong>Saved microphone not connected.</strong> Listen is still set to this microphone. Connect it again or choose another one.</p><button class="btn" id="use-default-microphone">Use Windows default</button></div>
+    ${row("live_preview")}
+    </section>
+    <details class="settings-disclosure" id="local-settings">
+      <summary><span>Speech to text &amp; AI cleanup</span><small>Two separate tools, both on this computer</small></summary>
+      <div class="settings-disclosure-body model-stages">
+        <section class="stage-row" aria-labelledby="stage-speech"><div><h2 id="stage-speech">Speech to text</h2><span class="route-tag">Local</span></div><div class="stage-choice">${control("speech_model")}<p id="speech-stage-summary"></p><p id="speech-model-note">${esc(options.speech_model_note || rows.get("speech_model")[2])}</p><p id="speech-model-status" role="status"></p></div></section>
+        <section class="stage-row" aria-labelledby="stage-cleanup"><div><h2 id="stage-cleanup">AI cleanup</h2><span class="route-tag">Local</span></div><div class="stage-choice"><div class="setting-controls">${control("local_model")}</div><p>${esc(rows.get("local_model")[2])}</p><p id="model-status" role="status"></p><div class="cleanup-preference"><span>AI clean-up</span>${control("cleanup")}</div><div class="cleanup-style"><label for="cleanup-style">How much to tidy</label>${control("style").replace('<select ', '<select id="cleanup-style" ')}</div><details class="model-benchmarks"><summary>Past cleanup tests</summary><p id="model-benchmark-summary"></p><div id="model-benchmark-content"></div></details></div></section>
+      </div>
+    </details>
+    <details class="settings-disclosure" id="prompt-settings">
+      <summary><span>Prompt Lab &amp; cloud</span><small>Local runs here. Paid cloud uses online AI and can cost money.</small></summary>
+      <div class="settings-disclosure-body">
+        <section class="stage-row" aria-labelledby="stage-writing"><div><h2 id="stage-writing">Write prompts</h2></div><div class="stage-choice">${control("engine")}<p>${esc(rows.get("engine")[2])}</p><p data-route-summary="engine"></p></div></section>
+        <section class="stage-row" aria-labelledby="stage-review"><div><h2 id="stage-review">Check prompts</h2></div><div class="stage-choice"><div class="setting-controls">${control("judge")}${control("judge_model")}</div><p>${esc(rows.get("judge")[2])}</p><p data-route-summary="judge"></p><p id="cloud-judge-help">${esc(rows.get("judge_model")[2])}</p></div></section>
+        ${["target", "cloud_enabled"].map(row).join("")}
+      </div>
+    </details>`;
   $$("#settings-grid select").forEach(s => s.onchange = () => setSetting(s.dataset.key, s.value));
   $$("#settings-grid .switch").forEach(b => b.onclick = () => setSetting(b.dataset.toggle, !settings[b.dataset.toggle]));
-  if (api().get_microphones) api().get_microphones().then(m => {
-    options.microphone = m;
-    const select = $('#settings-grid select[data-key="microphone"]');
-    if (select) {
-      select.innerHTML = Object.entries(m).map(([n, v]) => `<option value="${esc(v)}"${settings.microphone === v ? " selected" : ""}>${esc(n)}</option>`).join("");
-      if (settings.microphone != null && !Object.values(m).includes(settings.microphone)) {
-        const missing = new Option("Saved microphone unavailable — reconnect it or choose default", settings.microphone, true, true);
-        select.add(missing);
-      }
+  populateMicrophones();
+  $("#use-default-microphone").onclick = async () => {
+    await setSetting("microphone", "");
+    if (page === "settings" && settings.microphone == null) {
+      $('#settings-grid select[data-key="microphone"]')?.focus();
     }
-  });
-  api().diagnostics().then(d => { $("#diag").innerHTML = Object.entries(d).map(([k, v]) => `<div><b>${esc(k)}</b> · <span${k==="speech"?' id="diag-speech"':""}>${esc(v)}</span></div>`).join(""); });
+  };
   $("#refresh-models").onclick = refreshModels; refreshModels();
   const benchmarkDisclosure=$(".model-benchmarks");
   benchmarkDisclosure.ontoggle=()=>{if(benchmarkDisclosure.open)benchmarkDisclosure.scrollIntoView({block:"nearest"});};
@@ -385,10 +421,17 @@ function renderSettings() {
       options=latest;
       const choices=speechChoices(); speechSelect.innerHTML=choices.html; speechSelect.dataset.available=String(choices.available); speechSelect.disabled=!choices.available;
       syncSettings();
-    }).catch(()=>{ if(speechSelect===$("#speech-model")&&version===speechOptionsVersion&&!speechModelSavePending)$("#speech-model-status").textContent="Could not refresh speech choices. Your current model is preserved."; });
+    }).catch(()=>{ if(speechSelect===$("#speech-model")&&version===speechOptionsVersion&&!speechModelSavePending)$("#speech-model-status").textContent="Could not check the speech AI list. Your current choice is kept."; });
   }
   syncSettings();
+  refreshSettingsDetails();
   renderLearned();
+}
+function refreshSettingsDetails() {
+  return api().diagnostics().then(d => {
+    const labels={speech:"Speech to text","clean-up":"AI cleanup","prompt lab":"Prompt Lab",files:"Saved files"};
+    $("#diag").innerHTML = Object.entries(d).map(([k,v])=>`<div><b>${esc(labels[k]||k)}</b> · <span${k==="speech"?' id="diag-speech"':""}>${esc(v)}</span></div>`).join("");
+  }).catch(()=>{$('#diag').textContent='Could not read the app details. Open Settings again to try.';});
 }
 function syncSettings() {
   $$("#settings-grid select[data-key]").forEach(s => { const v = String(settings[s.dataset.key] ?? ""); if (s.value !== v && [...s.options].some(o => o.value === v)) s.value = v; });
@@ -396,10 +439,11 @@ function syncSettings() {
   const m = $("#local-model"); if (m && settings.local_model && [...m.options].some(o => o.value === settings.local_model)) m.value = settings.local_model;
   $$('[data-route-summary]').forEach(el => {
     const key = el.dataset.routeSummary, local = settings[key] !== "anthropic";
-    el.textContent = local ? `Uses ${settings.local_model || "the shared AI text model"} on this computer.` : settings.cloud_enabled ? "Cloud API enabled · paid calls. Text is sent only when you request this stage." : "Cloud selected, but cloud processing is disabled.";
+    el.textContent = local ? `Uses ${settings.local_model || "your text AI"} on this computer.` : settings.cloud_enabled ? "Paid cloud is on. Text goes to Claude only when you ask." : "Claude is selected, but paid cloud is off.";
   });
   const cloudJudge = $('#settings-grid select[data-key="judge_model"]');
   if (cloudJudge) cloudJudge.hidden = settings.judge !== "anthropic";
+  $('#cloud-judge-help')?.classList.toggle('hidden',settings.judge!=="anthropic");
   const speechNote=$("#speech-model-note");if(speechNote&&options.speech_model_note)speechNote.textContent=options.speech_model_note;
 }
 let modelsRefreshVersion = 0, modelSavePending = false, modelChoiceUnconfirmed = false;
@@ -474,21 +518,59 @@ async function loadSuggestions() {
 // ---------- history & stats ----------
 function fmtTs(ts) { const d = new Date(ts); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }); }
 function wordLabel(n) { return n + (n === 1 ? " word" : " words"); }  // spelled out: a bare "w" reads as weeks
+function historyInboxRow(e, i) {
+  const uncertain = e.delivery_status === "uncertain" || e.delivery_status === "pasted";
+  const retained = e.delivery_status === "retained";
+  const unknown = deliveryNeedsCheck(e) && !uncertain;
+  const delivery = uncertain ? "Paste not confirmed" : retained ? "Not sent" : e.delivery_status === "copied" ? "Copied for manual paste" : unknown ? "Paste status unknown" : "Text sent · arrival not checked";
+  const next = uncertain || unknown ? "Check the original app first. The text may already be there. Copy again only if it is missing." : retained ? "This text was saved instead of being sent. Copy it into the app where you want it." : e.delivery_status === "copied" ? "Paste into your intended app when you are ready." : "Saved here if you need to read or reuse it.";
+  const label = uncertain || unknown ? "Copy after checking" : retained ? "Copy saved text" : "Copy text";
+  return `<li class="history-entry${uncertain || unknown ? " needs-attention" : ""}" data-i="${i}" data-delivery="${esc(e.delivery_status)}"><div class="history-meta"><time>${fmtTs(e.ts)}</time><span>${e.kind==="engineer"?"Engineered prompt":e.kind==="prompt"?"Prompt":"Dictation"}</span><span class="history-saved">Text saved</span>${e.by?`<span>${esc(e.by)}</span>`:""}<span class="history-count">${wordLabel(e.text.trim().split(/\s+/).filter(Boolean).length)}${e.cost?` · $${e.cost<.01?e.cost.toFixed(4):e.cost.toFixed(2)}`:""}</span></div><p class="history-text">${esc(e.text)}</p><div class="history-delivery"><strong>${delivery}</strong><span>${next}</span></div><div class="history-actions"><button class="btn sm" data-history-copy="clean">${label}</button>${e.raw?'<button class="btn sm quiet" data-history-copy="raw">Copy original</button>':""}${uncertain?'<button class="link" data-review-paste>Clipboard recovery</button>':""}</div></li>`;
+}
 function histRow(e, i) {
   const outcome = { uncertain: "Check original app before copying again", retained: "Not sent - recover in Listen", copied: "Copied - paste manually", sent: "Text sent; arrival not checked", pasted: "Paste attempted; check original app", unknown: "Delivery status unavailable" }[e.delivery_status] || "";
   return `<li data-i="${i}"><span class="t">${fmtTs(e.ts)}</span>${e.kind === "prompt" ? '<span class="badge">prompt</span>' : e.kind === "engineer" ? '<span class="badge">Engineered prompt</span>' : ""}<span class="x">${esc(e.text)}${e.by ? `<small class="muted"> · ${esc(e.by)}</small>` : ""}${outcome ? `<small class="delivery-outcome">${outcome}</small>` : ""}</span><button class="btn sm" data-history-copy="clean">Copy</button>${e.raw ? '<button class="btn sm" data-history-copy="raw">Copy original</button>' : ""}<span class="n" title="Word count">${wordLabel(e.text.trim().split(/\s+/).filter(Boolean).length)}${e.cost ? ` · $${e.cost < 0.01 ? e.cost.toFixed(4) : e.cost.toFixed(2)}` : ""}</span></li>`;
 }
 // Rows keep their entries in memory; a row finds its entry by index instead of carrying copies of the text in the markup.
-function bindRows(ul, rows) {
-  $$("[data-history-copy]", ul).forEach(b => b.onclick = async () => { const e = rows[+b.closest("li").dataset.i]; try { if(await api().copy_text(b.dataset.historyCopy === "raw" ? (e.raw || "") : e.text)) toast("Copied"); else toast("Copy failed. Try again.",true); } catch { toast("Copy failed. Reconnect and try again.",true); } });
+function deliveryNeedsCheck(entry) {
+  return !["sent", "copied", "retained"].includes(entry.delivery_status);
 }
+function bindRows(ul, rows) {
+  $$("[data-history-copy]",ul).forEach(button=>button.onclick=async()=>{
+    const entry=rows[+button.closest('li').dataset.i];
+    if(!entry)return;
+    try {
+      if (api().get_delivery_status && (await api().get_delivery_status()).pending) {
+        await showPasteRecovery();
+        return;
+      }
+      if(deliveryNeedsCheck(entry)){
+        if(!await askConfirm('Check the original app first. This text may already be there. Copy again only if you checked and it is missing.'))return;
+      }
+      const text=button.dataset.historyCopy==='raw'?(entry.raw||''):entry.text;
+      if(await api().copy_text(text))toast('Copied. Paste it where you want it.');
+      else {toast('Copy was not confirmed. Check recovery before trying again.',true);await loadDeliveryStatus();}
+    } catch {toast('Copy was not confirmed. Your text stays saved here.',true);}
+  });
+  $$('[data-review-paste]', ul).forEach(button => button.onclick = async () => {
+    try { await showPasteRecovery(); }
+    catch { toast("Could not check clipboard recovery. Your text stays saved here.", true); }
+  });
+}
+async function showPasteRecovery() {
+  await loadDeliveryStatus();
+  if($('#delivery-recovery').classList.contains('hidden')){toast('No paste is waiting for clipboard recovery. Check the original app before copying again.');return;}
+  setBannersOpen(true);
+  $('.main').scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+}
+
 const HIST_PAGE = 200;
 let histAll = [], histShown = [], recentShown = [], histLimit = HIST_PAGE, histTimer;
 function renderHistory() {
   const q = $("#hist-search").value.trim().toLowerCase();
   const rows = histAll.filter(e => !q || e.text.toLowerCase().includes(q) || (e.raw || "").toLowerCase().includes(q));
   histShown = rows.slice(0, histLimit);
-  $("#hist-list").innerHTML = rows.length ? histShown.map(histRow).join("") + (rows.length > histLimit ? `<li class="empty"><button class="link" id="hist-more">Show more (${rows.length - histLimit} more)</button></li>` : "") : q ? '<li class="empty">No matching dictations. <button class="link" id="clear-filter">Clear filter</button></li>' : '<li class="empty">Your dictations will appear here after you record.</li>';
+  $("#hist-list").innerHTML = rows.length ? histShown.map(historyInboxRow).join("") + (rows.length > histLimit ? `<li class="empty"><button class="link" id="hist-more">Show more (${rows.length - histLimit} more)</button></li>` : "") : q ? '<li class="empty">No matching dictations. <button class="link" id="clear-filter">Clear filter</button></li>' : '<li class="empty">Your dictations will appear here after you record.</li>';
   bindRows($("#hist-list"), histShown); if($("#clear-filter")) $("#clear-filter").onclick=()=> { $("#hist-search").value=""; histLimit=HIST_PAGE; renderHistory(); };
   if($("#hist-more")) $("#hist-more").onclick=()=> { histLimit+=HIST_PAGE; renderHistory(); $("#hist-more")?.focus(); };
 }
@@ -521,10 +603,14 @@ async function loadHistory(entering = false) {
   const animate = historyEntryPending && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   historyEntryPending = false;
   historyStatsKey = key;
-  const stat = (v, l, s = "") => `<div class="stat"><div class="v">${historyMetric(v, animate)}</div><div class="l">${l}</div><div class="s">${s}</div></div>`;
+  const stat = (value, unit, label, detail = "") =>
+    `<div class="stat"><div class="l">${label}</div><div class="v"><span class="metric-digits">${historyMetric(value, animate)}</span>${unit ? `<small>${unit}</small>` : ""}</div><div class="s">${detail}</div></div>`;
   const stats = $("#stats");
-  stats.innerHTML = stat(st.today, "dictations today", `${st.week} this week`) + stat(st.words_week.toLocaleString(), "words this week", `${st.minutes_week.toFixed(1)} min of speech`) +
-    stat(st.wpm || "–", "words per minute", "speaking rate") + stat(st.latency ? st.latency.toFixed(1) + "s" : "–", "Processing and delivery attempt", `$${st.spend_month.toFixed(2)} estimated API cost this month${st.spend_unknown ? ` · ${st.spend_unknown} unpriced calls` : ""}${st.spend_note ? " · " + esc(st.spend_note) : ""}`);
+  stats.innerHTML = stat(st.today, "today", "Dictations", `${st.week} this week`) +
+    stat(st.words_week.toLocaleString(), "words", "This week", `${st.minutes_week.toFixed(1)} min spoken`) +
+    stat(st.wpm || "–", "wpm", "Speaking speed") +
+    stat(st.latency ? st.latency.toFixed(1) : "–", st.latency ? "s" : "", "Processing", "Includes send attempt") +
+    `<p class="stats-meta">$${st.spend_month.toFixed(2)} est. API this month${st.spend_unknown ? ` · ${st.spend_unknown} unpriced calls` : ""}${st.spend_note ? " · " + esc(st.spend_note) : ""}</p>`;
   if (animate) for (const strip of stats.querySelectorAll(".metric-strip")) {
     const reel = strip.animate([{transform:"none"}, {transform:"translateY(-80%)"}],
       {duration:1500,easing:"cubic-bezier(.2,.5,.4,1)",fill:"both"});
@@ -1220,7 +1306,7 @@ function setDisplayedProperty(element, property, value) {
 function syncBanners() {
   const shown = $$("#banners > .notice, #banners > .card").filter(el => !el.classList.contains("hidden")), first = shown[0];
   $("#banners-bar").classList.toggle("hidden", !shown.length);
-  if (!shown.length) $("#banners").classList.toggle("open", false);
+  if (!shown.length && $("#banners").classList.contains("open")) setBannersOpen(false);
   const text = first ? (first.classList.contains("notice") ? first.textContent : first.querySelector(".card-title")?.textContent || "") : "";
   setDisplayedProperty($("#banners-summary"), "textContent", text + (shown.length > 1 ? ` (+${shown.length - 1} more)` : ""));
 }
@@ -1336,7 +1422,12 @@ async function boot() {
 }
 // Hidden windows poll slowly; coming back restores the normal rate at once (unless a poll is already running).
 document.addEventListener("visibilitychange",()=> { if(!document.hidden&&pollTimer&&!pollRunning) { clearTimeout(pollTimer); poll(); } });
-$("#banners-toggle").onclick=()=> { const open=$("#banners").classList.toggle("open"); $("#banners-toggle").setAttribute("aria-expanded",String(open)); $("#banners-toggle").textContent=open?"Hide":"Details"; };
+function setBannersOpen(open) {
+  $("#banners").classList.toggle("open", open);
+  $("#banners-toggle").setAttribute("aria-expanded", String(open));
+  $("#banners-toggle").textContent = open ? "Hide" : "Details";
+}
+$("#banners-toggle").onclick = () => setBannersOpen(!$("#banners").classList.contains("open"));
 window.addEventListener("pywebviewready",()=>{bridgeReady=true;boot();},{once:true});
 if(demo || bridgeReady)boot();else connection("Connecting to desktop app…");
 })();

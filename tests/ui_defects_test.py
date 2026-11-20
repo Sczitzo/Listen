@@ -52,7 +52,7 @@ check('card titles are h2', re.search(r'<div class="card-title">(?!<h2)', html) 
 check('quit is a text-only navigation control', re.search(r'<button[^>]+id="btn-quit"[^>]*><span>Quit</span></button>', html) is not None)
 check('Dictate keeps an accessible heading and places status by recording controls', '<h1 class="sr-only" tabindex="-1">Dictate</h1>' in html and re.search(r'<div class="recording-summary">[\s\S]+?id="status-dictate"', html) is not None)
 check('Dictate Recent starts collapsed with direct access to History', re.search(r'<details class="card frame recent">\s*<summary>Recent</summary>', html) is not None and 'class="link recent-history" data-goto="history"' in html)
-check('Dictate reuses Settings for cleanup and style', 'id="chips-dictate"' not in html and 'control("cleanup")' in js and '["style", "target", "cloud_enabled"].map(row)' in js)
+check('Dictate reuses Settings for cleanup and style', 'id="chips-dictate"' not in html and 'control("cleanup")' in js and 'control("style")' in js)
 check('history word count is spelled out, never a bare "w"', 'function wordLabel' in js and '.length}w' not in js and '}w${e.cost' not in js)
 check('finish/cancel stay visible (disabled) while idle', all(re.search(r'<button\b[^>]*id="'+key+r'"[^>]*\bdisabled', html) for key in ('btn-finish','btn-cancel')))
 check('how-it-works disclosure', '<details class="how"><summary>How it works</summary>' in html)
@@ -115,6 +115,8 @@ await run('renderSettings has four processing stages with the shared model under
  assert(m.includes('>On</span>')&&m.includes('>Off</span>'),'switches lack visible On/Off text');
  assert(m.indexOf('id="stage-cleanup"')<m.indexOf('id="local-model"')&&m.indexOf('id="local-model"')<m.indexOf('id="stage-writing"'),'model row not under AI cleanup');
  assert.equal((m.match(/id="local-model"/g)||[]).length,1,'Shared local model must have one selection owner');
+ assert(m.indexOf('data-key="hotkey"')<m.indexOf('<details'), 'The current hotkey selector must be visible above the collapsed settings');
+ assert(m.indexOf('id="local-settings"')<m.indexOf('id="prompt-settings"'), 'Local and cloud choices must remain in separate disclosures');
 });
 await run('setSetting on Settings page does not rebuild the page',async()=>{
  let rendered=0,synced=0;
@@ -152,10 +154,11 @@ await run('history caps at 200 rows, Show more, 200 ms debounce, index lookup',a
  R('#stats').querySelectorAll=()=>Array.from(R('#stats').innerHTML.matchAll(/class="metric-strip"/g),()=>({
   animate:(_frames,timing)=>{durations.push(timing.duration);return {};}
  }));
- const entries=Array.from({length:450},(_,i)=>({ts:'2026-09-12T10:12:00',kind:'dictate',text:'entry '+i,raw:'raw '+i,cost:0}));
+ const entries=Array.from({length:450},(_,i)=>({ts:'2026-09-12T10:12:00',kind:'dictate',text:'entry '+i,raw:'raw '+i,cost:0,delivery_status:i===4?'legacy':'sent'}));
+ let confirmed=false, prompts=0;
  const btn=el();btn.dataset.historyCopy='clean';btn.closest=()=>({dataset:{i:'3'}});
  const c=vm.createContext({console,esc:x=>String(x),$:s=>s==='#hist-more'?(R('#hist-list').innerHTML.includes('id="hist-more"')?R(s):null):s==='#clear-filter'?null:R(s),
-  $$:(s)=>s==='[data-history-copy]'?[btn]:[],toast(){},page:'history',window:{matchMedia:()=>({matches:false})},
+  $$:(s)=>s==='[data-history-copy]'?[btn]:[],toast(){},askConfirm:async()=>{prompts++;return confirmed;},page:'history',window:{matchMedia:()=>({matches:false})},
   api:()=>({get_history:async()=>entries,get_stats:async()=>({today:1,week:1,words_week:1,minutes_week:1,wpm:1,latency:1,spend_month:0}),copy_text:async t=>{copied.push(t);return true;}}),
   setTimeout:(fn,ms)=>{timers.set(++n,{fn,ms});return n;},clearTimeout:id=>timers.delete(id)});
  vm.runInContext(cut('function fmtTs(','async function clearPrivate('),c);
@@ -163,7 +166,8 @@ await run('history caps at 200 rows, Show more, 200 ms debounce, index lookup',a
  assert(!R('#stats').innerHTML.includes('metric-strip'),'background refresh started a roll');
  await vm.runInContext('Promise.all([loadHistory(true),loadHistory()])',c);
  assert.deepEqual(durations,[1500,1500,1500,1500,1500],'each digit needs its own entry roll');
- assert(R('#stats').innerHTML.includes('class="sr-only">1.0s</span>'),'exact processing time is missing');
+ assert(R('#stats').innerHTML.includes('class="sr-only">1.0</span>') && R('#stats').innerHTML.includes('<small>s</small>'),'exact processing time or unit is missing');
+ assert((R('#stats').innerHTML.match(/class="stat"/g)||[]).length===4 && R('#stats').innerHTML.includes('class="stats-meta"'),'four cards and separate cost estimate required');
  await vm.runInContext('loadHistory()',c);
  assert.equal(durations.length,5,'unchanged data restarted the roll');
  c.window.matchMedia=()=>({matches:true});
@@ -174,6 +178,11 @@ await run('history caps at 200 rows, Show more, 200 ms debounce, index lookup',a
  assert(R('#hist-list').innerHTML.includes('Show more'));
  assert(!/data-text=|data-raw=/.test(R('#hist-list').innerHTML),'rows still carry text copies');
  await btn.onclick();assert.equal(copied.at(-1),'entry 3','copy did not look up the entry by index');
+ assert.equal(prompts,0);
+ btn.closest=()=>({dataset:{i:'4'}});
+ await btn.onclick();assert.equal(prompts,1);assert.deepEqual(copied,['entry 3'],'unconfirmed legacy copy must leave clipboard alone');
+ confirmed=true;await btn.onclick();assert.equal(copied.at(-1),'entry 4');
+ assert(R('#hist-list').innerHTML.includes('Paste status unknown'),'legacy row must not imply successful delivery');
  R('#hist-more').onclick();assert.equal(rows(),400);
  for(let i=0;i<3;i++)R('#hist-search').oninput();
  assert.equal(timers.size,1,'filter is not debounced');assert.equal([...timers.values()][0].ms,200);

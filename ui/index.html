@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Listen</title>
-  <link rel="stylesheet" href="app.css?v=20261119-listen19-layout">
+  <link rel="stylesheet" href="app.css?v=20261119-listen19-main-window">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -99,7 +99,7 @@
     <!-- ================= Prompt Lab ================= -->
     <section class="page" data-page="lab">
       <header class="page-head">
-        <h1 tabindex="-1">Prompt Lab</h1>
+        <h1 class="sr-only" tabindex="-1">Prompt Lab</h1>
         <div class="actions lab-head-actions">
           <button class="btn quiet" id="btn-lab-models" popovertarget="lab-models"><span id="lab-model-label">Models</span><span class="sr-only"> · Prompt Lab processing options</span><svg class="ico down" aria-hidden="true"><use href="#i-chevron"/></svg></button>
           <button class="btn" id="btn-new"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg>New draft</button>
@@ -174,7 +174,7 @@
 
     <!-- ================= History ================= -->
     <section class="page" data-page="history">
-      <header class="page-head"><h1 tabindex="-1">History</h1></header>
+      <h1 class="sr-only" tabindex="-1">History</h1>
       <div class="stats" id="stats"></div>
       <div class="search"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="hist-search">Filter history</label><input id="hist-search" class="input" placeholder="Filter history" autocomplete="off"></div>
       <div class="card grow"><ul class="list" id="hist-list"></ul></div>
@@ -183,19 +183,24 @@
 
     <!-- ================= Settings ================= -->
     <section class="page" data-page="settings">
-      <header class="page-head"><div><h1 tabindex="-1">Settings</h1><p class="page-intro">A clear place for each part of the process.</p></div></header>
+      <h1 class="sr-only" tabindex="-1">Settings</h1>
       <div class="settings-grid" id="settings-grid"></div>
+      <details class="settings-disclosure more-settings">
+        <summary><span>More settings</span><small>Keyboard shortcuts, things Listen learns, and saved files</small></summary>
+        <div class="settings-disclosure-body">
       <fieldset class="card frame"><legend class="frame-title"><h2>Shortcuts</h2></legend>
         <div class="shortcuts">
-          <div><kbd>Ctrl</kbd><kbd>1</kbd>…<kbd>4</kbd> pages</div><div><kbd>Ctrl</kbd><kbd>Enter</kbd> paste draft</div>
-          <div><kbd>Ctrl</kbd><kbd>S</kbd> save favorite</div><div><kbd>Ctrl</kbd><kbd>K</kbd> command palette</div>
-          <div><kbd>Esc</kbd> cancel a recording · close a popover</div>
+          <div><kbd>Ctrl</kbd><kbd>1</kbd>…<kbd>4</kbd> switch tabs</div><div><kbd>Ctrl</kbd><kbd>Enter</kbd> paste draft</div>
+          <div><kbd>Ctrl</kbd><kbd>S</kbd> save favorite</div><div><kbd>Ctrl</kbd><kbd>K</kbd> find a command</div>
+          <div><kbd>Esc</kbd> cancel a recording · close a small menu</div>
         </div></fieldset>
-      <fieldset class="card frame"><legend class="frame-title"><h2>Learned preferences</h2> <button class="switch on" id="learn-switch" role="switch" aria-checked="true" aria-label="Use learned preferences"><span class="sw-t">On</span></button></legend>
+      <fieldset class="card frame"><legend class="frame-title"><h2>What Listen learns</h2> <button class="switch on" id="learn-switch" role="switch" aria-checked="true" aria-label="Use what Listen learns"><span class="sw-t">On</span></button></legend>
         <div id="learned" class="muted"></div>
-        <div class="actions" style="margin-top:8px"><span class="muted" id="learned-note">Built only from prompts you keep and corrections you make. Never changes code.</span><span class="spacer"></span><button class="btn ghost" id="btn-reset-learned">Reset</button></div></fieldset>
-      <fieldset class="card frame"><legend class="frame-title"><h2>Privacy and storage</h2></legend><p class="muted">Recovery drafts and instructions are saved locally as plaintext. Older recovery backups may remain after clearing; this is not secure erasure. Favorites and cost estimates are separate.</p><div class="actions"><button class="btn" data-clear="workspace">Clear workspace</button><button class="btn" data-clear="logs">Clear logs</button></div></fieldset>
-      <details class="card"><summary>Diagnostics</summary><div id="diag" class="muted"></div></details>
+        <div class="actions" style="margin-top:8px"><span class="muted" id="learned-note">Learns only from prompts you keep and changes you make. It never edits code.</span><span class="spacer"></span><button class="btn ghost" id="btn-reset-learned">Forget these</button></div></fieldset>
+      <fieldset class="card frame"><legend class="frame-title"><h2>Saved files</h2></legend><p class="muted">Drafts and instructions are saved on this computer as readable text files. Clearing them may leave older backups; it does not securely erase them. Favorites and cost estimates are stored separately. App logs are files that help find problems.</p><div class="actions"><button class="btn" data-clear="workspace">Clear drafts and instructions</button><button class="btn" data-clear="logs">Clear app logs</button></div></fieldset>
+      <details class="card"><summary>Details for fixing problems</summary><div id="diag" class="muted"></div></details>
+        </div>
+      </details>
     </section>
   </main>
 
@@ -277,6 +282,6 @@
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 </div>
 <script src="model-benchmarks.js?v=20261119-listen19"></script>
-<script src="app.js?v=20261119-listen19-layout"></script>
+<script src="app.js?v=20261119-listen19-main-window"></script>
 </body>
 </html>
