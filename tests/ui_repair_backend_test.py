@@ -55,7 +55,7 @@ def runtime():
         saves=saves, costs=costs, ExperienceApi=experience.ExperienceApi,
         set_candidate=experience.set_candidate,
         _lab_cost=lambda: 0, _append_history=lambda row: calls.append('history'),
-        _composer='Retained Instruction', _quitting=False, _speech_changing=False, _last_error='',
+        _composer='Retained Instruction', _quitting=False, _speech_changing=False, _hotkey_rebinding=False, _last_error='',
         _recording=threading.Event(), _pending_recordings=0, _pending_pastes=0,
         _busy='', _jobs=SimpleNamespace(unfinished_tasks=0),
         _preview=SimpleNamespace(in_flight=lambda: False, end=lambda: calls.append('preview-end')),

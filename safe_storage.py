@@ -90,11 +90,14 @@ def read_history(path, limit=500):
 
 
 def valid_setting(key, value):
+    if key == 'hotkey':
+        from hotkey_bindings import valid_keyboard_binding
+        return valid_keyboard_binding(value)
     if key == 'speech_model':
         from speech_runtime import SPEECH_MODEL_IDS
         return isinstance(value, str) and value in SPEECH_MODEL_IDS
     prompt_routes = {'anthropic', 'openai', 'gemini', 'local'}
-    options = {'hotkey': {'ctrl_r', 'shift_r', 'alt_r', 'pause', 'scroll_lock'}, 'style': {'tighten', 'clean'},
+    options = {'style': {'tighten', 'clean'},
                'target': {'claude_code', 'general'}, 'judge': prompt_routes, 'engine': prompt_routes,
                'judge_model': {'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'}}
     if key in options:

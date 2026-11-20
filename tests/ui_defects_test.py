@@ -121,6 +121,73 @@ await run('settings page updated in place (On/Off text, aria-checked)',async()=>
  assert.equal(sw.attrs['aria-checked'],'false');assert.equal(label.textContent,'Off');assert(!sw.cls.has('on'));assert.equal(sel.value,'clean');
  c.settings.cleanup=true;vm.runInContext('syncSettings()',c);assert.equal(label.textContent,'On');assert(sw.cls.has('on'));
 });
+await run('hotkey picker waits for release and checks registered keys',async()=>{
+ const R=registry(), targets=()=> {
+  const handlers=new Map();
+  return {
+   addEventListener(type, fn) {if(!handlers.has(type))handlers.set(type,new Set());handlers.get(type).add(fn);},
+   removeEventListener(type, fn) {handlers.get(type)?.delete(fn);},
+   fire(type, event) {for(const fn of [...(handlers.get(type)||[])])fn(event);}
+  };
+ };
+ const document={...targets(),hasFocus:()=>true}, window=targets();
+ const dialog=R('#hotkey-dialog');dialog.showModal=()=>{dialog.open=true;};
+ const capture=R('#hotkey-capture'), use=R('#hotkey-use');
+ for(const control of [dialog,capture,use])Object.assign(control,targets());
+ const opener=el();opener.isConnected=true;
+ const event={key:'Enter',code:'Enter',target:{closest:()=>opener}};
+ let begun=0, checked=[];
+ const c=vm.createContext({$:R,document,window,opener,page:'dictate',performance:{now:()=>0},setTimeout:()=>0,toast(){},demo:false,options:{},esc:String,
+  api:()=>({
+   begin_hotkey_capture:async()=>{begun++;return {ok:true,token:'one',expires_in:30};},
+   check_hotkey_capture:async(token,value)=>{checked.push(value);return {ok:true,level:'clear'};}
+  })});
+ vm.runInContext(cut('const hotkeyDialog =','$(".main").addEventListener("focusin"')+cut('function hotkeyLabel(','function chip('),c);
+ document.fire('keydown',event);
+ const blurred=vm.runInContext('openHotkeyPicker(opener)',c);
+ window.fire('blur');
+ await blurred;
+ assert.equal(begun,0,'losing focus before release must cancel the request');
+ document.fire('keydown',event);
+ const opened=vm.runInContext('openHotkeyPicker(opener)',c);
+ await tick();
+ assert.equal(begun,0,'the native snapshot would still see Enter held');
+ document.fire('keyup',event);
+ await opened;
+ assert.equal(begun,1);
+ assert(dialog.open);
+ const send=(type,key,code,ctrlKey=false)=>capture.fire(type,{key,code,ctrlKey,preventDefault(){},stopPropagation(){},getModifierState:()=>false});
+ const press=(key,code=key,ctrlKey=false)=>{send('keydown',key,code,ctrlKey);send('keyup',key,code,ctrlKey);};
+ const retry=()=>R('#hotkey-again').onclick();
+ const note=R('#hotkey-windows-note');
+ press('F24');
+ await tick();
+ assert.equal(checked.at(-1),'f24');
+ assert(!note.cls.has('hidden'),'custom registrations show the release caveat');
+ retry();
+ press('Delete');
+ assert.equal(checked.length,1,'Delete alone may not be registered');
+ send('keydown','Control','ControlLeft',true);
+ press('PageDown','PageDown',true);
+ send('keyup','Control','ControlLeft');
+ await tick();
+ assert.equal(checked.at(-1),'ctrl+page_down');
+ assert.match(R('#hotkey-key').innerHTML,/<kbd>Page Down<\/kbd>/);
+ retry();
+ send('keydown','Control','ControlLeft',true);
+ press('Enter','NumpadEnter',true);
+ send('keyup','Control','ControlLeft');
+ await tick();
+ assert.equal(checked.at(-1),'ctrl+enter');
+ retry();
+ press('Control','ControlRight',false);
+ await tick();
+ assert.equal(checked.at(-1),'ctrl_r');
+ assert(note.cls.has('hidden'),'legacy keys retain their existing behavior');
+ retry();
+ press('F12');
+ assert(use.cls.has('hidden'),'the reserved F12 key cannot be confirmed');
+});
 await run('renderSettings has four processing stages with the shared model under AI cleanup',async()=>{
  const R=registry();
  const c=vm.createContext({settings:{cleanup:true,live_preview:false},options:{},esc:x=>String(x),$:R,$$:()=>[],api:()=>({diagnostics:async()=>({})}),refreshModels(){},renderLearned(){},setSetting(){}});
@@ -170,13 +237,15 @@ await run('error toasts stay 8s, pause on hover, role=alert, dismissible',async(
 await run('Finish is primary while recording; Finish/Cancel stay visible but disabled while idle',async()=>{
  const R=registry(),status=el();status['.dot']=el();status['.status-text']=el();
  const c=vm.createContext({$:(s,r)=>r?r[s]:R(s),$$:s=>s==='.status'?[status]:[],settings:{cleanup:true,hotkey:'ctrl_r'},options:{hotkey:{'Right Ctrl':'ctrl_r'}},document:{body:el()}});
- vm.runInContext(cut('// ---------- polling ----------','let lastErr ='),c);
+ vm.runInContext(cut('function hotkeyLabel(','function chip(')+cut('// ---------- polling ----------','let lastErr ='),c);
  const idle={state:'idle',busy:'',last_error:'',llm_ok:true,speech_runtime:{state:'ready'}};
  c.st=idle;vm.runInContext('setStatus(st)',c);
  assert(!R('#btn-finish').cls.has('hidden')&&!R('#btn-cancel').cls.has('hidden'),'Finish/Cancel must stay discoverable while idle');assert(R('#btn-finish').disabled&&R('#btn-cancel').disabled);
  c.st={...idle,state:'recording'};vm.runInContext('setStatus(st)',c);
  assert(!R('#btn-finish').cls.has('hidden')&&R('#btn-finish').cls.has('primary'),'Finish not primary while recording');assert(!R('#btn-cancel').cls.has('primary'));
+ c.settings.hotkey='ctrl+shift+f8';
  c.st=idle;vm.runInContext('setStatus(st)',c);assert(!R('#btn-finish').cls.has('primary'));
+ assert.match(R('#dictate-instruction').textContent,/Press Ctrl \+ Shift \+ F8/);
 });
 await run('history caps at 200 rows, Show more, 200 ms debounce, index lookup',async()=>{
  const R=registry(),timers=new Map();let n=0,copied=[];

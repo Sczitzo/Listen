@@ -34,7 +34,7 @@ function setup(){
     toggle(x,v){if(v===undefined)v=!classes.has(x);v?classes.add(x):classes.delete(x);}},
    get textContent(){return text;},set textContent(value){this.writes++;text=value;},
    get innerHTML(){return html;},set innerHTML(value){assert(!id.startsWith('#live-preview'),'Preview rendered HTML');html=value;},
-   focus(){focusCalls++;},append(){},getClientRects:()=>[1]};
+   focus(){focusCalls++;},append(){},setAttribute(name,value){this[name]=value;},getClientRects:()=>[1]};
  }
  const $=(selector,parent)=>{const id=parent?parent.id+' '+selector:selector;if(!nodes.has(id))nodes.set(id,element(id));return nodes.get(id);};
  const $$=selector=>selector==='.status'?[$('#status-dictate'),$('#status-lab')]:[];
@@ -49,7 +49,7 @@ function setup(){
   loadDeliveryStatus:async()=>{},drawBars(){},show(){},setTimeout(){},
   bridgeLost:false,lastErr:'',retainedVersion:0,lastLabVer:0,lastBusy:'',lastHistLen:0,lab:{},editorDirty:false,composerDirty:false,
   feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0});
- vm.runInContext(preview+setting+clear+status+polling+actions,context);
+ vm.runInContext(source.slice(source.indexOf('function hotkeyLabel('),source.indexOf('function chip('))+preview+setting+clear+status+polling+actions,context);
  return {c:context,$,$$,bridge,notices,focusCalls:()=>focusCalls};
 }
 function state(version,text,extra={}){return {state:'recording',busy:'',locked:false,last_error:'',llm_ok:true,

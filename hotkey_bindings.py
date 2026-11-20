@@ -17,8 +17,14 @@ MODIFIER_KEYS = {
     'shift': frozenset((0x10, 0xA0, 0xA1)),
 }
 ALL_MODIFIER_KEYS = frozenset().union(*MODIFIER_KEYS.values())
-TRIGGERS = {'space': 0x20}
-TRIGGERS.update({f'f{index}': 0x70 + index - 1 for index in range(1, 13)})
+TRIGGERS = {
+    'space': 0x20, 'enter': 0x0D, 'backspace': 0x08,
+    'arrow_left': 0x25, 'arrow_up': 0x26, 'arrow_right': 0x27, 'arrow_down': 0x28,
+    'page_up': 0x21, 'page_down': 0x22, 'end': 0x23, 'home': 0x24,
+    'insert': 0x2D, 'delete': 0x2E,
+}
+TRIGGERS.update({f'f{index}': 0x70 + index - 1 for index in range(1, 25)})
+WINDOWS_MODIFIERS = {'alt': 1, 'ctrl': 2, 'shift': 4}
 TRIGGERS.update({letter: ord(letter.upper()) for letter in 'abcdefghijklmnopqrstuvwxyz'})
 TRIGGERS.update({number: ord(number) for number in '0123456789'})
 
@@ -32,7 +38,8 @@ def _parse(value):
         return ('mouse', (), value[6:])
     # Require an exact canonical sequence, no duplicates and a single trigger.
     parts = value.split('+')
-    if len(parts) < 2 or len(parts) > 4 or parts[-1] not in TRIGGERS:
+    if (len(parts) > 4 or parts[-1] not in TRIGGERS
+            or (len(parts) == 1 and not parts[-1][1:].isdigit())):
         return None
     modifiers = parts[:-1]
     if (any(part not in MODIFIERS for part in modifiers)
@@ -44,6 +51,61 @@ def _parse(value):
 def valid_binding(value):
     """Accept only existing single keys, two side buttons, or canonical chords."""
     return _parse(value) is not None
+
+
+def valid_keyboard_binding(value):
+    """The production setting excludes the separately deferred mouse feature."""
+    parsed = _parse(value)
+    return (parsed is not None and parsed[0] != 'mouse'
+            and value not in ('alt+f4', 'ctrl+alt+delete')
+            and value.rsplit('+', 1)[-1] != 'f12')
+
+
+def binding_label(value):
+    names = {'ctrl_r': 'Right Ctrl', 'shift_r': 'Right Shift', 'alt_r': 'Right Alt',
+             'pause': 'Pause', 'scroll_lock': 'Scroll Lock', 'space': 'Space',
+             'ctrl': 'Ctrl', 'alt': 'Alt', 'shift': 'Shift', 'enter': 'Enter', 'backspace': 'Backspace',
+             'arrow_left': 'Left Arrow', 'arrow_right': 'Right Arrow',
+             'arrow_up': 'Up Arrow', 'arrow_down': 'Down Arrow',
+             'page_up': 'Page Up', 'page_down': 'Page Down',
+             'home': 'Home', 'end': 'End', 'insert': 'Insert', 'delete': 'Delete'}
+    return ' + '.join(names.get(part, part.upper()) for part in value.split('+'))
+
+
+def windows_registration(value):
+    if not valid_keyboard_binding(value) or value in LEGACY_BINDINGS:
+        return None
+    _, modifiers, key = _parse(value)
+    return sum(WINDOWS_MODIFIERS[name] for name in modifiers), key
+
+
+def shortcut_conflict(value, check_registered):
+    if not valid_keyboard_binding(value):
+        if isinstance(value, str) and ('win' in value.split('+') or value in ('alt+f4', 'ctrl+alt+delete')
+                                      or value.rsplit('+', 1)[-1] == 'f12'):
+            return 'blocked', 'Windows reserves this shortcut. Pick another one.'
+        return 'blocked', 'Use a function key or hold Ctrl, Alt or Shift with a supported key.'
+    kind, modifiers, key = _parse(value)
+    if kind == 'legacy':
+        return 'clear', ''
+    system = check_registered(modifiers, key)
+    if system == 'claimed':
+        return 'blocked', 'Another app has already registered this shortcut in Windows.'
+    if system != 'free':
+        return 'warning', 'Windows could not check this shortcut. It may already be in use.'
+    listen_command = {
+        'ctrl+1': 'Dictate', 'ctrl+2': 'Prompt Lab', 'ctrl+3': 'History', 'ctrl+4': 'Settings',
+        'ctrl+k': 'the command menu', 'ctrl+s': 'Save favorite',
+    }.get(value)
+    if listen_command:
+        return 'warning', f'Listen already uses this shortcut for {listen_command}.'
+    if 'ctrl' in modifiers and 'alt' in modifiers and (0x30 <= key <= 0x5A or key == 0x20):
+        return 'warning', 'This shortcut can override characters typed with AltGr on some keyboards.'
+    if (not modifiers or modifiers in (('alt',), ('shift',))
+            or (key in map(ord, 'ACDFHKNOPRSTVWXYZ') and modifiers == ('ctrl',))
+            or (key == 0x74 and modifiers == ('ctrl',))):
+        return 'warning', 'This shortcut is common in other apps. Using it here can override their shortcut.'
+    return 'clear', ''
 
 
 def _physical_snapshot(keys_down, mouse_down):
@@ -103,6 +165,11 @@ class HotkeyRouter:
         """Whether changing the binding can no longer split an input pair."""
         with self._lock:
             return self._idle()
+
+    def trigger_release_observed(self):
+        """Async state cannot verify release of an input whose down was swallowed."""
+        with self._lock:
+            return self._consumed_key is None and self._consumed_mouse is None
 
     def rebind(self, binding):
         parsed = _parse(binding)
@@ -288,7 +355,10 @@ class HotkeyRouter:
                 return code == self._consumed_key, []
             self._keys_down.add(code)
             if self._gesture:
-                kind, required, _ = self._gesture
+                kind, required, trigger = self._gesture
+                if kind == 'key' and code == trigger:
+                    self._consumed_key = trigger
+                    return True, []
                 if kind == 'key' and any(code in MODIFIER_KEYS[name] for name in required):
                     return False, []
                 return False, ['other']
@@ -319,7 +389,8 @@ class HotkeyRouter:
             self._key_tombstones.remove(code)
             return True, []
         if not was_down:
-            return False, []
+            return bool(self._gesture and self._gesture[0] == 'key'
+                        and self._gesture[2] == code), []
         self._key_tombstones.discard(code)
         self._keys_down.remove(code)
         suppress = code == self._consumed_key

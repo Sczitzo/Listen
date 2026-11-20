@@ -74,6 +74,8 @@ from dictation_quality import filter_segments, validate_score, without_review_fo
 from spoken_format import formatting_is_safe as cleanup_is_safe, FORMAT_INSTRUCTIONS, FORMAT_REVISION, layout_explicit_lists, prepare_spoken_list, list_layout_is_safe
 from spoken_corrections import correction_source
 from voice_commands import split_voice_command, engineering_preservation_issue
+from hotkey_bindings import HotkeyRouter, LEGACY_BINDINGS, WINDOWS_MODIFIERS, binding_label, shortcut_conflict, windows_registration
+from registered_hotkey import RegisteredHotkey
 from safe_storage import (atomic_write_json, load_json, read_history, valid_setting,
                           validated_settings, validated_favorites, validated_learned)
 from audio_devices import microphone_options, resolve_microphone
@@ -292,7 +294,8 @@ def save_settings():
 
 
 def hotkey():
-    return getattr(pk.Key, SETTINGS["hotkey"])
+    value = SETTINGS['hotkey']
+    return getattr(pk.Key, value) if value in LEGACY_BINDINGS else value
 
 
 def vocab_words():
@@ -730,10 +733,16 @@ _hotkey_events = queue.SimpleQueue()
 _hotkey_dispatch_thread = None
 _hotkey_epoch = 0
 _hotkey_action_epoch = None
+_hotkey_input_lock = threading.RLock()
+_hotkey_router = HotkeyRouter(SETTINGS['hotkey'])
+_registered_hotkey = None
+_hotkey_pending = 0
+_hotkey_rebinding = False
+_hotkey_capture_token = None
+_hotkey_capture_until = 0.0
+_hotkey_capture_draining = False
+_hotkey_cancel_recovery_generation = None
 _hook_key_down = False
-_hotkey_capture = None
-_hotkey_capture_held = set()
-HOTKEY_CAPTURE_SECONDS = 30
 _CAPTURE_TARGET = object()
 _state = "loading"     # loading | idle | recording   (what the hotkey side is doing)
 _busy = ""             # "" | transcribing | cleaning | engineering | error   (what the worker is doing)
@@ -1099,7 +1108,10 @@ def _start(target=_CAPTURE_TARGET):
     with _mic_lock:
         if _stale_hotkey_action():
             return
-        if _quitting or _recording.is_set() or _state == "loading":
+        with _hotkey_input_lock:
+            _refresh_capture_hotkeys()
+        if (_quitting or _recording.is_set() or _state == "loading" or _hotkey_rebinding
+                or _hotkey_capture_token is not None or _hotkey_capture_draining):
             return
         if _open_thread is not None and _open_thread.is_alive():
             _last_error = "Microphone is still opening. Wait a moment, then try again."
@@ -1270,7 +1282,7 @@ def _stop():
 
 
 def _cancel():
-    global _state, _locked
+    global _state, _locked, _hotkey_cancel_recovery_generation
     with _mic_lock:
         if _stale_hotkey_action():
             return
@@ -1281,6 +1293,7 @@ def _cancel():
         _locked = False
         _state = "idle"
         gen = _gen
+        _hotkey_cancel_recovery_generation = gen
         target = _record_target
     def finish_cancel():
         try:
@@ -1353,7 +1366,7 @@ def _invalidate_external_hotkeys():
 
 
 def _hotkey_worker():
-    global _last_error, _state, _hotkey_down, _skip_release, _locked, _hotkey_epoch, _hotkey_action_epoch
+    global _last_error, _state, _hotkey_down, _skip_release, _locked, _hotkey_epoch, _hotkey_action_epoch, _hotkey_pending
     while True:
         event = _hotkey_events.get()
         if event is None:
@@ -1384,31 +1397,202 @@ def _hotkey_worker():
                 _close_mic(failed_gen)
             except Exception:
                 print('[hotkey] microphone close failed')
+        finally:
+            with _hotkey_input_lock:
+                _hotkey_pending -= 1
+
+
+def _check_registered_hotkey(modifiers, key):
+    # Keep the temporary registration on this thread; never replace a Listen binding.
+    from ctypes import wintypes
+    try:
+        user = ctypes.WinDLL('user32', use_last_error=True)
+        register = user.RegisterHotKey
+        unregister = user.UnregisterHotKey
+        register.argtypes = (wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT)
+        unregister.argtypes = (wintypes.HWND, ctypes.c_int)
+        register.restype = unregister.restype = wintypes.BOOL
+        flags = sum(WINDOWS_MODIFIERS[name] for name in modifiers)
+        registration = 0x4C53
+        if not register(None, registration, flags | 0x4000, key):
+            return 'claimed' if ctypes.get_last_error() == 1409 else 'unknown'
+        return 'free' if unregister(None, registration) else 'unknown'
+    except (AttributeError, OSError):
+        return 'unknown'
+
+
+def _physical_keyboard_snapshot():
+    """Read only outside hook callbacks; generic modifier codes duplicate sides."""
+    try:
+        user = _text_native().user
+        return {code for code in range(8, 256) if code not in (0x10, 0x11, 0x12)
+                and user.GetAsyncKeyState(code) & 0x8000}
+    except Exception:
+        return None
+
+
+def _queue_hotkey(epoch, action, key, at, target=None):
+    global _hotkey_pending
+    _hotkey_pending += 1
+    _hotkey_events.put((epoch, action, key, at, target))
+
+
+def _capture_hotkeys_paused(at):
+    global _hotkey_capture_token, _hotkey_capture_draining
+    if _hotkey_rebinding:
+        return _hotkey_capture_draining
+    if _hotkey_capture_token is not None and at >= _hotkey_capture_until:
+        _hotkey_capture_token = None
+    if _hotkey_capture_token is None and _hotkey_router.idle():
+        _hotkey_capture_draining = False
+    return _hotkey_capture_token is not None or _hotkey_capture_draining
+
+
+def _refresh_capture_hotkeys():
+    """Outside hooks only: capture downs reached Windows, so none own suppression."""
+    global _hotkey_router
+    with _hotkey_input_lock:
+        _capture_hotkeys_paused(time.perf_counter())
+        if not _hotkey_capture_draining or _hotkey_rebinding:
+            return
+        snapshot = _physical_keyboard_snapshot()
+        if snapshot is None:
+            return
+        _hotkey_router = HotkeyRouter(SETTINGS['hotkey'])
+        _hotkey_router.reconcile(snapshot, set())
+        _capture_hotkeys_paused(time.perf_counter())
+
+
+def _set_keyboard_binding(value, capture_token=None):
+    global _hotkey_rebinding, _hotkey_epoch, _hotkey_down, _hook_key_down, _registered_hotkey
+    global _skip_release, _locked, _hotkey_cancel_recovery_generation
+    with _mic_lock, _hotkey_input_lock:
+        if (_quitting or _speech_busy() or _lab['busy'] or _speech_changing
+                or _hotkey_pending or _hotkey_rebinding or _hook_key_down or _hotkey_down is not None):
+            return False
+        _refresh_capture_hotkeys()
+        if capture_token is None:
+            if _hotkey_capture_token is not None or _hotkey_capture_draining:
+                return False
+        elif (not isinstance(capture_token, str) or capture_token != _hotkey_capture_token
+              or time.perf_counter() >= _hotkey_capture_until):
+            return False
+        snapshot = _physical_keyboard_snapshot()
+        if snapshot is None:
+            return False
+        if (_hotkey_cancel_recovery_generation == _gen
+                and _hotkey_router.trigger_release_observed()):
+            _hotkey_router.recover_cancel(snapshot, set())
+        _hotkey_router.reconcile(snapshot, set())
+        if not _hotkey_router.begin_rebind(value):
+            return False
+        _hotkey_rebinding = True
+        _hotkey_epoch += 1
+        _hotkey_down = None
+        _hook_key_down = _skip_release = _locked = False
+    registration = _registered_hotkey
+    proposed = windows_registration(value)
+    reserved = False
+    try:
+        if registration is None and proposed is not None:
+            registration = _registered_hotkey = RegisteredHotkey(
+                _registered_hotkey_edge, _registered_cancel_when, _registered_hotkey_cancel)
+        if registration is not None:
+            reserved = registration.prepare(proposed)
+            if not reserved:
+                return False
+        with _data_lock:
+            previous = dict(SETTINGS)
+            updated = dict(previous, hotkey=value)
+            atomic_write_json(SETTINGS_FILE, updated)
+            if reserved:
+                if not registration.finish(True):
+                    atomic_write_json(SETTINGS_FILE, previous)
+                    return False
+                reserved = False
+            with _hotkey_input_lock:
+                SETTINGS.update(updated)
+                _hotkey_router.finish_rebind(True)
+                _hotkey_cancel_recovery_generation = None
+        return True
+    except (OSError, RuntimeError):
+        return False
+    finally:
+        if reserved:
+            registration.finish(False)
+        with _hotkey_input_lock:
+            _hotkey_router.finish_rebind(False)
+            _hotkey_rebinding = False
+
+
+def _registered_cancel_when():
+    return not _quitting and (_recording.is_set() or _hook_key_down or bool(_hotkey_pending))
+
+
+def _registered_hotkey_cancel():
+    with _hotkey_input_lock:
+        at = time.perf_counter()
+        if (_registered_cancel_when() and not _hotkey_rebinding
+                and not _capture_hotkeys_paused(at)):
+            _queue_hotkey(_hotkey_epoch, 'cancel', None, at)
+
+
+def _registered_hotkey_edge(combo, down, at):
+    global _hook_key_down
+    with _hotkey_input_lock:
+        value = SETTINGS['hotkey']
+        if combo != windows_registration(value):
+            return
+        if _quitting or _hotkey_rebinding or _capture_hotkeys_paused(at):
+            if not down:
+                _hook_key_down = False
+            return
+        if down and not _hook_key_down:
+            _hook_key_down = True
+            _queue_hotkey(_hotkey_epoch, 'press', value, at, capture_target())
+        elif not down and _hook_key_down:
+            _hook_key_down = False
+            _queue_hotkey(_hotkey_epoch, 'release', value, at)
 
 
 def _create_keyboard_listener():
-    global _hotkey_dispatch_thread
+    global _hotkey_dispatch_thread, _registered_hotkey, _last_error
     # Native reads at ingress must never lazy-initialize under an app lock.
     _text_native()
+    with _hotkey_input_lock:
+        snapshot = _physical_keyboard_snapshot()
+        if snapshot is not None:
+            _hotkey_router.reconcile(snapshot, set())
     if _hotkey_dispatch_thread is None or not _hotkey_dispatch_thread.is_alive():
         _hotkey_dispatch_thread = threading.Thread(target=_hotkey_worker, name='hotkey-actions', daemon=True)
         _hotkey_dispatch_thread.start()
-    # All input decisions enter through the filter, in physical arrival order.
+    combo = windows_registration(SETTINGS['hotkey'])
+    if combo is not None and _registered_hotkey is None:
+        try:
+            _registered_hotkey = RegisteredHotkey(
+                _registered_hotkey_edge, _registered_cancel_when, _registered_hotkey_cancel)
+            if not _registered_hotkey.replace(combo):
+                _last_error = 'Your shortcut is unavailable in Windows. Choose another in Hotkey.'
+        except (OSError, RuntimeError):
+            _last_error = 'Windows shortcuts are unavailable. Open Hotkey to choose another.'
     return pk.Listener(win32_event_filter=_event_filter)
 
 
 def _close_hotkey_dispatch():
-    global _hotkey_dispatch_thread, _hotkey_epoch
+    global _hotkey_dispatch_thread, _hotkey_epoch, _registered_hotkey
+    registration_closed = _registered_hotkey is None or _registered_hotkey.close()
+    if registration_closed:
+        _registered_hotkey = None
     _hotkey_epoch += 1
     thread = _hotkey_dispatch_thread
     if thread is None:
-        return True
+        return registration_closed
     _hotkey_events.put(None)
     thread.join(2)
     if thread.is_alive():
         return False
     _hotkey_dispatch_thread = None
-    return True
+    return registration_closed
 
 
 def _event_filter(msg, data):
@@ -1434,43 +1618,46 @@ def _event_filter(msg, data):
 
 
 def _queued_event_filter(msg, data):
-    """Only paired Escape suppression, native target reads and queue writes."""
+    """Observe physical edges, capture the destination and queue short decisions."""
     global _escape_down, _hook_key_down
     down, up = msg in (0x100, 0x104), msg in (0x101, 0x105)
+    if not (down or up):
+        return False
     at = time.perf_counter()
-    epoch = _hotkey_epoch
-    capture = _hotkey_capture
-    vk = data.vkCode
-    if vk in _hotkey_capture_held or (capture and at < capture[1]):
-        # Ignore firmware repeats and the matching release after the dialog closes.
-        if up:
-            _hotkey_capture_held.discard(vk)
-            if vk == hotkey().value.vk:
-                _hook_key_down = False
-        elif down and any(vk == getattr(pk.Key, key).value.vk for key in HOTKEY_NAMES.values()):
-            _hotkey_capture_held.add(vk)
-        return False
-    if data.vkCode == 0x1B:
-        if down and (_escape_down or _recording.is_set() or _hook_key_down or not _hotkey_events.empty()):
-            if not _escape_down:
-                _hotkey_events.put((epoch, 'cancel', None, at, None))
-            _escape_down = True
+    with _hotkey_input_lock:
+        epoch = _hotkey_epoch
+        paused = _capture_hotkeys_paused(at)
+        value = _hotkey_router.binding()
+        legacy = value in LEGACY_BINDINGS
+        reserved = _hotkey_router.rebind_status() in ('reserved', 'pending')
+        suppress = False
+        if legacy or paused:
+            suppress, _ = _hotkey_router.transition('key', data.vkCode, down)
+        if paused:
+            _capture_hotkeys_paused(at)
+            return False
+        if data.vkCode == 0x1B:
+            if down and (_escape_down or _recording.is_set() or _hook_key_down or _hotkey_pending):
+                if not _escape_down and not _quitting:
+                    _queue_hotkey(epoch, 'cancel', None, at)
+                _escape_down = True
+                suppress = True
+            elif up and _escape_down:
+                _escape_down = False
+                suppress = True
+        elif legacy and not reserved and not _quitting:
+            selected = getattr(pk.Key, value)
+            if data.vkCode == selected.value.vk:
+                if down and not _hook_key_down:
+                    _hook_key_down = True
+                    _queue_hotkey(epoch, 'press', selected, at, capture_target())
+                elif up:
+                    _hook_key_down = False
+                    _queue_hotkey(epoch, 'release', selected, at)
+            elif down and _hook_key_down:
+                _queue_hotkey(epoch, 'press', pk.KeyCode.from_vk(data.vkCode), at)
+        if suppress:
             _listener.suppress_event()
-        elif up and _escape_down:
-            _escape_down = False
-            _listener.suppress_event()
-        return False
-    selected = hotkey()
-    if data.vkCode == selected.value.vk:
-        if down and not _hook_key_down:
-            _hook_key_down = True
-            target = capture_target()
-            _hotkey_events.put((epoch, 'press', selected, at, target))
-        elif up:
-            _hook_key_down = False
-            _hotkey_events.put((epoch, 'release', selected, at, None))
-    elif down and _hook_key_down:
-        _hotkey_events.put((epoch, 'press', pk.KeyCode.from_vk(data.vkCode), at, None))
     return False  # Windows receives input; prevent duplicate pynput callbacks.
 
 
@@ -2392,7 +2579,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261119-listen19-providers"
+UI_VERSION = "20261120-listen19-windows-shortcuts"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -2514,7 +2701,7 @@ def pill_thread(tray):
             live_enabled = SETTINGS.get('live_preview', True)
             finish_key = ''
             if recording and announced and _locked:
-                finish_key = next((name for name, key in HOTKEY_NAMES.items() if key == SETTINGS['hotkey']), '')
+                finish_key = binding_label(SETTINGS['hotkey'])
         activity = ''
         if recording:
             activity = 'Listening…' if announced else 'Starting…'
@@ -2603,6 +2790,7 @@ class Api(ExperienceApi):
     # ---- state & settings ----
     def get_state(self):
         global _event
+        _refresh_capture_hotkeys()
         ev, _event = _event, ""
         speech = _speech_status()
         preview = _preview.snapshot()
@@ -2646,39 +2834,60 @@ class Api(ExperienceApi):
                 "speech_model_label": speech_model_label(selected), "speech_model_note": speech_model_note(selected)}
 
     def begin_hotkey_capture(self):
-        global _hotkey_capture, _hotkey_epoch
-        with _mic_lock:
-            now = time.perf_counter()
-            if (_quitting or _state != 'idle' or _recording.is_set()
-                    or _hotkey_down is not None or _hook_key_down or _escape_down
-                    or _pending_recordings or _pending_pastes or _jobs.unfinished_tasks
-                    or (_hotkey_capture and now < _hotkey_capture[1])):
+        global _hotkey_capture_token, _hotkey_capture_until, _hotkey_capture_draining, _hotkey_epoch
+        with _mic_lock, _hotkey_input_lock:
+            _refresh_capture_hotkeys()
+            if (_quitting or _speech_busy() or _lab['busy'] or _speech_changing
+                    or _state != 'idle' or _hotkey_down is not None or _hook_key_down or _escape_down
+                    or _hotkey_pending or _hotkey_rebinding or _hotkey_capture_token is not None):
                 return {'ok': False}
-            token = uuid.uuid4().hex
-            _hotkey_capture = (token, now + HOTKEY_CAPTURE_SECONDS, SETTINGS['hotkey'])
+            snapshot = _physical_keyboard_snapshot()
+            if snapshot is None:
+                return {'ok': False}
+            if (_hotkey_cancel_recovery_generation == _gen
+                    and _hotkey_router.trigger_release_observed()):
+                _hotkey_router.recover_cancel(snapshot, set())
+            _hotkey_router.reconcile(snapshot, set())
+            if not _hotkey_router.idle():
+                return {'ok': False}
+            _hotkey_capture_token = uuid.uuid4().hex
+            _hotkey_capture_until = time.perf_counter() + 30
+            _hotkey_capture_draining = True
             _hotkey_epoch += 1
-            return {'ok': True, 'token': token, 'expires_in': HOTKEY_CAPTURE_SECONDS}
+            return {'ok': True, 'token': _hotkey_capture_token, 'expires_in': 30}
 
-    def finish_hotkey_capture(self, token, value=None):
-        global _hotkey_capture
-        with _mic_lock:
-            capture = _hotkey_capture
-            if not capture or token != capture[0]:
-                return {'ok': False}
-            try:
-                if value is None:
-                    return {'ok': True}
-                if (time.perf_counter() >= capture[1] or _quitting
-                        or not isinstance(value, str) or value not in HOTKEY_NAMES.values()):
+    def check_hotkey_capture(self, token, value):
+        with _hotkey_input_lock:
+            if (not isinstance(token, str) or token != _hotkey_capture_token
+                    or time.perf_counter() >= _hotkey_capture_until or _quitting):
+                return {'ok': False, 'message': 'The picker timed out. Open Hotkey to try again.'}
+        if value == SETTINGS['hotkey'] and _registered_hotkey is not None:
+            return {'ok': True, 'level': 'clear', 'message': ''}
+        level, message = shortcut_conflict(value, _check_registered_hotkey)
+        return {'ok': True, 'level': level, 'message': message}
+
+    def finish_hotkey_capture(self, token, value=None, accept_warning=False):
+        global _hotkey_capture_token
+        if value is None:
+            with _hotkey_input_lock:
+                if not isinstance(token, str) or token != _hotkey_capture_token:
                     return {'ok': False}
-                with _data_lock:
-                    if SETTINGS['hotkey'] != capture[2]:
-                        return {'ok': False}
-                    if value != SETTINGS['hotkey'] and not self.set_setting('hotkey', value):
-                        return {'ok': False}
-                    return {'ok': True, 'hotkey': value}
-            finally:
-                _hotkey_capture = None
+                if _hotkey_rebinding:
+                    return {'ok': False, 'message': 'The confirmed shortcut is still saving.'}
+                _hotkey_capture_token = None
+                _refresh_capture_hotkeys()
+                return {'ok': True}
+        check = self.check_hotkey_capture(token, value)
+        if not check['ok'] or check['level'] == 'blocked' or (
+                check['level'] == 'warning' and accept_warning is not True):
+            return {'ok': False, 'message': check['message']}
+        if not _set_keyboard_binding(value, token):
+            return {'ok': False, 'message': 'Could not save the shortcut. It may have been claimed or a key may still be down.'}
+        with _hotkey_input_lock:
+            if token == _hotkey_capture_token:
+                _hotkey_capture_token = None
+                _refresh_capture_hotkeys()
+        return {'ok': True, 'hotkey': value}
 
     def set_setting(self, key, value):
         global _llm_ok, _cleanup_warm_pending
@@ -2686,6 +2895,8 @@ class Api(ExperienceApi):
             return False
         if key == 'speech_model':
             return _set_speech_model(value)
+        if key == 'hotkey':
+            return value in LEGACY_BINDINGS and _set_keyboard_binding(value)
         if key == "microphone":
             if _recording.is_set():
                 return False
@@ -3170,6 +3381,8 @@ def bump_favorite(name):
 
 
 def _quit_work_message():
+    if _hotkey_rebinding:
+        return 'Your keyboard shortcut is still saving. Wait a moment, then try Quit again.'
     if _speech_changing:
         return 'Speech model is changing. Wait for it to finish before quitting.'
     if _recording.is_set():

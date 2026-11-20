@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Listen</title>
-  <link rel="stylesheet" href="app.css?v=20261119-listen19-providers">
+  <link rel="stylesheet" href="app.css?v=20261120-listen19-windows-shortcuts">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -261,10 +261,18 @@
 
   <dialog id="hotkey-dialog" class="name-dialog hotkey-dialog" aria-labelledby="hotkey-title" aria-describedby="hotkey-help">
     <h2 id="hotkey-title">Press your hotkey</h2>
-    <p class="muted" id="hotkey-help">Press and release a supported key to save it. Esc cancels.</p>
-    <button type="button" class="hotkey-capture" id="hotkey-capture" aria-label="Press your hotkey" autofocus><kbd id="hotkey-key" role="status">Listening for keys…</kbd></button>
-    <p class="muted hotkey-options" id="hotkey-options"></p>
-    <div class="actions"><button type="button" class="btn quiet" id="hotkey-cancel">Cancel</button></div>
+    <p class="muted" id="hotkey-help">Press a key or combination, then release all the keys to check it.</p>
+    <button type="button" class="hotkey-capture" id="hotkey-capture" aria-label="Press a key or combination" autofocus><span id="hotkey-key" class="hotkey-keys" role="status">Listening for keys…</span></button>
+    <p class="muted hotkey-options" id="hotkey-options" role="status"></p>
+    <p class="muted hotkey-options hidden" id="hotkey-windows-note" role="status">The app you’re typing in may still see the key being released.</p>
+    <div id="hotkey-conflict" class="hotkey-conflict hidden" role="alert">
+      <strong id="hotkey-conflict-title"></strong><p id="hotkey-conflict-message"></p>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn quiet" id="hotkey-cancel">Cancel</button>
+      <button type="button" class="btn hidden" id="hotkey-again">Pick again</button>
+      <button type="button" class="btn primary hidden" id="hotkey-use">Use hotkey</button>
+    </div>
   </dialog>
   <dialog id="favorite-name-dialog" class="name-dialog" aria-labelledby="favorite-name-title">
     <form method="dialog">
@@ -289,6 +297,6 @@
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 </div>
 <script src="model-benchmarks.js?v=20261119-listen19"></script>
-<script src="app.js?v=20261119-listen19-providers"></script>
+<script src="app.js?v=20261120-listen19-windows-shortcuts"></script>
 </body>
 </html>

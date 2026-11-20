@@ -45,52 +45,112 @@ def check_hotkey_picker():
 
     api = d.Api()
     writes = []
+    snapshot = set()
+    current_registration = None
+    proposed_registration = None
+
+    class Registration:
+        def __init__(self, callback, cancel_when=None, on_cancel=None):
+            self.callback = callback
+            self.cancel_when, self.on_cancel = cancel_when, on_cancel
+
+        def prepare(self, proposed):
+            nonlocal proposed_registration
+            proposed_registration = proposed
+            return True
+
+        def finish(self, commit):
+            nonlocal current_registration
+            if commit:
+                current_registration = proposed_registration
+            return True
     def edge(vk, pressed):
+        if pressed:
+            snapshot.add(vk)
+        else:
+            snapshot.discard(vk)
         return d._queued_event_filter(0x100 if pressed else 0x101, SimpleNamespace(vkCode=vk))
 
     with patch.dict(d.SETTINGS, {'hotkey': 'ctrl_r'}), \
+         patch.object(d, '_state', 'idle'), \
+         patch.object(d, '_physical_keyboard_snapshot', side_effect=lambda: set(snapshot)), \
+         patch.object(d, '_check_registered_hotkey', return_value='free'), \
+         patch.object(d, '_registered_hotkey', None), \
+         patch.object(d, 'RegisteredHotkey', Registration), \
          patch.object(d, 'atomic_write_json', side_effect=lambda _, values: writes.append(values['hotkey'])), \
          patch.object(d, 'capture_target', return_value=None):
         epoch = d._hotkey_epoch
         first = api.begin_hotkey_capture()
         assert first['ok'] and d._hotkey_epoch == epoch + 1
+        token = first['token']
         assert not api.begin_hotkey_capture()['ok']
         d._recording.set()
         assert not api.begin_hotkey_capture()['ok']
         d._recording.clear()
         assert edge(0xa3, True) is False and d._hotkey_events.empty()
         assert not api.finish_hotkey_capture('wrong-token', 'shift_r')['ok']
-        assert api.finish_hotkey_capture(first['token'])['ok']
+        assert api.finish_hotkey_capture(token)['ok']
         edge(0xa3, True)
         edge(0xa3, False)
         assert d._hotkey_events.empty() and not writes and d.SETTINGS['hotkey'] == 'ctrl_r'
         edge(0xa3, True)
         edge(0xa3, False)
         assert [d._hotkey_events.get_nowait()[1] for _ in range(2)] == ['press', 'release']
+        d._hotkey_pending -= 2  # This fixture consumed the queue without the worker.
 
-        second = api.begin_hotkey_capture()
+        second = api.begin_hotkey_capture()['token']
         edge(0xa1, True)
         edge(0xa1, False)
-        assert api.finish_hotkey_capture(second['token'], 'shift_r') == {'ok': True, 'hotkey': 'shift_r'}
-        assert writes == ['shift_r'] and d.SETTINGS['hotkey'] == 'shift_r'
+        assert api.check_hotkey_capture(second, 'alt+f4')['level'] == 'blocked'
+        assert not api.finish_hotkey_capture(second, 'alt+f4', True)['ok']
+        assert api.check_hotkey_capture(second, 'ctrl+c')['level'] == 'warning'
+        assert not api.finish_hotkey_capture(second, 'ctrl+c')['ok']
+        assert not writes
+        with patch.object(d, '_check_registered_hotkey', return_value='claimed'):
+            assert not api.finish_hotkey_capture(second, 'ctrl+c', True)['ok']
+        assert api.finish_hotkey_capture(second, 'ctrl+c', True) == {'ok': True, 'hotkey': 'ctrl+c'}
+        assert writes == ['ctrl+c'] and d.SETTINGS['hotkey'] == 'ctrl+c'
+        assert current_registration == (2, 0x43)
         assert d._hotkey_events.empty()
-        third = api.begin_hotkey_capture()
-        assert not api.finish_hotkey_capture(third['token'], 'Ctrl+J')['ok']
-        with patch.object(d, 'HOTKEY_CAPTURE_SECONDS', -1):
-            expired = api.begin_hotkey_capture()
-        assert not api.finish_hotkey_capture(expired['token'], 'ctrl_r')['ok']
-        assert writes == ['shift_r'] and d.SETTINGS['hotkey'] == 'shift_r'
+        reg = d._registered_hotkey
+        reg.callback((4, 0x43), True, 5)
+        assert d._hotkey_events.empty()
+        reg.callback(current_registration, True, 5)
+        reg.callback(current_registration, True, 5.01)
+        reg.callback(current_registration, False, 5.1)
+        assert [d._hotkey_events.get_nowait()[1] for _ in range(2)] == ['press', 'release']
+        assert d._hotkey_events.empty()
+        d._hotkey_pending -= 2
+        assert not reg.cancel_when()
+        reg.on_cancel()
+        assert d._hotkey_events.empty()
+        d._recording.set()
+        try:
+            assert reg.cancel_when()
+            reg.on_cancel()
+            assert d._hotkey_events.get_nowait()[1] == 'cancel'
+            d._hotkey_pending -= 1
+        finally:
+            d._recording.clear()
 
-        fourth = api.begin_hotkey_capture()
+        third = api.begin_hotkey_capture()['token']
+        with patch.object(d, '_hotkey_capture_until', 0):
+            assert not api.finish_hotkey_capture(third, 'ctrl_r')['ok']
+        assert not api.set_setting('hotkey', 'ctrl+shift+f8')
         with patch.object(d, 'atomic_write_json', side_effect=OSError):
-            try:
-                api.finish_hotkey_capture(fourth['token'], 'ctrl_r')
-            except OSError:
-                pass
-            else:
-                raise AssertionError('Could not detect a hotkey save failure')
-        assert d._hotkey_capture is None and d.SETTINGS['hotkey'] == 'shift_r'
-        assert not d._hotkey_capture_held
+            assert not api.finish_hotkey_capture(third, 'ctrl_r')['ok']
+        assert api.finish_hotkey_capture(third)['ok']
+        assert d.SETTINGS['hotkey'] == 'ctrl+c'
+        assert current_registration == (2, 0x43)
+        assert not d._hotkey_capture_token
+
+        fourth = api.begin_hotkey_capture()['token']
+        def save_and_check_capture_ownership(*_args):
+            assert not api.finish_hotkey_capture(fourth)['ok']
+            assert d._hotkey_capture_token == fourth
+            assert not api.begin_hotkey_capture()['ok']
+        with patch.object(d, 'atomic_write_json', side_effect=save_and_check_capture_ownership):
+            assert api.finish_hotkey_capture(fourth, 'ctrl_r')['ok']
 
 
 check_hotkey_picker()

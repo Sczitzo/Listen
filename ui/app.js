@@ -42,9 +42,33 @@ mock._archives=[];mock._favorites=[{name:"Demo review",text:"Review this synthet
 mock._settings.judge_model="claude-haiku-5-5";
 mock._settings.live_preview=true;
 mock.get_settings=async()=>({...mock._settings});mock.set_setting=async(k,v)=>{mock._settings[k]=v;return true;};
-mock.begin_hotkey_capture = async () => ({ok:true, token:"demo", expires_in:30});
-mock.finish_hotkey_capture = async (_token, value) => {
-  if (value) await mock.set_setting("hotkey", value);
+let mockHotkeySequence = 0, mockHotkeyToken = null;
+mock.begin_hotkey_capture = async () => ({
+  ok:true, token:mockHotkeyToken = "demo-" + ++mockHotkeySequence, expires_in:30,
+});
+mock.check_hotkey_capture = async (token, value) => {
+  if (token !== mockHotkeyToken) return {ok:false};
+  const blocked = reservedHotkeyMessage(value);
+  if (blocked) return {ok:true, level:"blocked", message:blocked};
+  if (value === mock._settings.hotkey) return {ok:true, level:"clear"};
+  const command = /^ctrl\+[1-4]$/.test(value) ? ["Dictate", "Prompt Lab", "History", "Settings"][+value.at(-1) - 1]
+    : {"ctrl+k":"the command menu", "ctrl+s":"Save favorite", "ctrl+enter":"Paste draft"}[value];
+  if (command) return {ok:true, level:"warning", message:"Listen uses this shortcut for " + command + "."};
+  if (/^ctrl\+[acsvxz]$/.test(value) || /^f\d+$/.test(value)) {
+    return {ok:true, level:"warning", message:"Other apps may already use this shortcut."};
+  }
+  return {ok:true, level:"clear"};
+};
+mock.finish_hotkey_capture = async (token, value, acceptWarning = false) => {
+  if (token !== mockHotkeyToken) return {ok:false};
+  if (value) {
+    const decision = await mock.check_hotkey_capture(token, value);
+    if (!decision.ok || decision.level === "blocked" || (decision.level === "warning" && !acceptWarning)) {
+      return {ok:false, message:decision.message};
+    }
+    await mock.set_setting("hotkey", value);
+  }
+  mockHotkeyToken = null;
   return {ok:true, hotkey:value};
 };
 mock.set_text=async(text,id)=>{
@@ -237,105 +261,263 @@ function show(p, focus = true) {
 $$(".rail-btn").forEach(b => b.onclick = () => show(b.dataset.page));
 $$("[data-goto]").forEach(b => b.onclick = () => show(b.dataset.goto));
 const hotkeyDialog = $("#hotkey-dialog"), hotkeyCapture = $("#hotkey-capture");
-const hotkeyCodes = {ControlRight:"ctrl_r", ShiftRight:"shift_r", AltRight:"alt_r", Pause:"pause", ScrollLock:"scroll_lock"};
-let hotkeyLease = null, hotkeyOpening = false, hotkeySaving = false, hotkeyPress = null, hotkeyTimer;
+const hotkeyCancel = $("#hotkey-cancel"), hotkeyAgain = $("#hotkey-again"), hotkeyUse = $("#hotkey-use");
+const hotkeySingles = {ControlRight:"ctrl_r", ShiftRight:"shift_r", AltRight:"alt_r", Pause:"pause", ScrollLock:"scroll_lock"};
+const hotkeyNamedTriggers = {ArrowLeft:"arrow_left", ArrowRight:"arrow_right", ArrowUp:"arrow_up", ArrowDown:"arrow_down",
+  Home:"home", End:"end", Insert:"insert", Delete:"delete", PageUp:"page_up", PageDown:"page_down",
+  Backspace:"backspace", Enter:"enter", NumpadEnter:"enter"};
+const hotkeyHeld = new Set(), hotkeyOpenerKeys = new Set();
+let hotkeyLease = null, hotkeyOpening = false, hotkeyMode = "listening";
+let hotkeyTrigger = null, hotkeyChoice = "", hotkeyBlock = "", hotkeyMultiple = false;
 
-$("#btn-hotkey-card").onclick = async () => {
+document.addEventListener("keydown", event => {
+  if ((event.key === "Enter" || event.key === " ") && !event.isComposing && event.keyCode !== 229
+      && event.target.closest?.("#btn-hotkey-card, #settings-hotkey, #palette-input")) {
+    hotkeyOpenerKeys.add(event.code || event.key);
+  }
+}, true);
+document.addEventListener("keyup", event => hotkeyOpenerKeys.delete(event.code || event.key), true);
+window.addEventListener("blur", () => hotkeyOpenerKeys.clear());
+
+function waitForHotkeyOpener() {
+  if (!hotkeyOpenerKeys.size) return true;
+  return new Promise(resolve => {
+    const finish = released => {
+      document.removeEventListener("keyup", release, true);
+      window.removeEventListener("blur", cancel);
+      resolve(released);
+    };
+    const release = () => { if (!hotkeyOpenerKeys.size) finish(true); };
+    const cancel = () => finish(false);
+    document.addEventListener("keyup", release, true);
+    window.addEventListener("blur", cancel);
+  });
+}
+
+function reservedHotkeyMessage(value) {
+  const keys = value.split("+");
+  if (keys.includes("win")) return "Windows reserves shortcuts that use the Windows key.";
+  if (keys.at(-1) === "f12") return "Windows reserves F12 for debugging.";
+  if (value === "alt+f4") return "Windows uses Alt + F4 to close the current window.";
+  return "";
+}
+
+function hotkeyTriggerValue(key, code) {
+  if (key === " ") return "space";
+  if (/^[a-z0-9]$/i.test(key)) return key.toLowerCase();
+  if (/^F(?:[1-9]|1\d|2[0-4])$/.test(code)) return code.toLowerCase();
+  if (/^Digit[0-9]$/.test(code)) return code.at(-1);
+  return hotkeyNamedTriggers[key] || hotkeyNamedTriggers[code] || "";
+}
+
+function resetHotkeyKeys() {
+  hotkeyHeld.clear();
+  hotkeyTrigger = null;
+  hotkeyChoice = hotkeyBlock = "";
+  hotkeyMultiple = false;
+  $("#hotkey-key").textContent = "Listening for keys…";
+}
+
+function resetHotkeyPicker() {
+  hotkeyMode = "listening";
+  resetHotkeyKeys();
+  hotkeyCapture.disabled = hotkeyCancel.disabled = hotkeyAgain.disabled = hotkeyUse.disabled = false;
+  $("#hotkey-options").textContent = "";
+  $("#hotkey-windows-note").classList.add("hidden");
+  $("#hotkey-conflict").classList.add("hidden");
+  hotkeyAgain.classList.add("hidden");
+  hotkeyUse.classList.add("hidden");
+}
+
+async function openHotkeyPicker(opener) {
   if (hotkeyOpening || hotkeyLease) return;
   hotkeyOpening = true;
-  const started = performance.now();
+  const sourcePage = page;
   try {
+    if (!await waitForHotkeyOpener() || sourcePage !== page || !opener?.isConnected || !document.hasFocus()) return;
+    const started = performance.now();
     const capture = await api().begin_hotkey_capture();
-    if (!capture.ok) {
+    if (!capture?.ok || !capture.token) {
       toast("Finish the current recording or release the hotkey before trying again.", true);
       return;
     }
-    hotkeyLease = capture.token;
-    const remaining = capture.expires_in * 1000 - (performance.now() - started) - 1000;
-    if (remaining <= 0 || page !== "dictate" || !document.hasFocus()) {
-      await api().finish_hotkey_capture(hotkeyLease);
+    const expiresAt = started + capture.expires_in * 1000 - 1000;
+    const remaining = expiresAt - performance.now();
+    hotkeyLease = {token:capture.token, expiresAt, opener};
+    if (sourcePage !== page || !opener?.isConnected || !document.hasFocus() || remaining <= 0) {
+      await api().finish_hotkey_capture(capture.token);
       hotkeyLease = null;
       if (remaining <= 0) toast("Hotkey setup timed out. Click Hotkey to try again.");
       return;
     }
-    $("#hotkey-key").textContent = "Listening for keys…";
-    $("#hotkey-options").textContent = "Supported keys: " + Object.keys(options.hotkey).join(", ") + ".";
+    resetHotkeyPicker();
     hotkeyDialog.showModal();
     hotkeyCapture.focus();
-    hotkeyTimer = setTimeout(() => {
-      if (hotkeyDialog.open && !hotkeySaving) {
+    const lease = hotkeyLease;
+    lease.timer = setTimeout(() => {
+      if (hotkeyLease === lease && hotkeyDialog.open && hotkeyMode !== "saving") {
         hotkeyDialog.close();
         toast("Hotkey setup timed out. Click Hotkey to try again.");
       }
     }, remaining);
   } catch {
-    const token = hotkeyLease;
+    const token = hotkeyLease?.token;
     hotkeyLease = null;
     if (token) api().finish_hotkey_capture(token).catch(() => {});
     toast("Could not start hotkey setup. Try again.", true);
   } finally { hotkeyOpening = false; }
-};
+}
+
+function showHotkeyCheck(level, message = "") {
+  hotkeyMode = "checked";
+  $("#hotkey-options").textContent = "";
+  $("#hotkey-conflict-title").textContent = level === "blocked" ? "Choose another shortcut" : "Possible shortcut conflict";
+  $("#hotkey-conflict-message").textContent = message;
+  $("#hotkey-conflict").classList.toggle("hidden", level === "clear");
+  $("#hotkey-windows-note").classList.toggle("hidden",
+    demo || level === "blocked" || Object.values(hotkeySingles).includes(hotkeyChoice));
+  hotkeyAgain.classList.remove("hidden");
+  hotkeyUse.classList.toggle("hidden", level === "blocked");
+  hotkeyUse.textContent = level === "warning" ? "Use anyway" : "Use hotkey";
+  hotkeyUse.dataset.warning = String(level === "warning");
+  (level === "clear" ? hotkeyUse : hotkeyAgain).focus();
+}
+
+async function checkHotkeyChoice() {
+  const lease = hotkeyLease;
+  hotkeyMode = "checking";
+  hotkeyCapture.disabled = true;
+  hotkeyCancel.focus();
+  if (hotkeyBlock) {
+    showHotkeyCheck("blocked", hotkeyBlock);
+    return;
+  }
+  $("#hotkey-options").textContent = "Checking the shortcut…";
+  try {
+    const result = await api().check_hotkey_capture(lease.token, hotkeyChoice);
+    if (hotkeyLease !== lease || !hotkeyDialog.open) return;
+    if (result?.ok && ["clear", "warning", "blocked"].includes(result.level)) {
+      showHotkeyCheck(result.level, result.message);
+      return;
+    }
+    showHotkeyCheck("blocked", result?.message || "Could not check this shortcut. Try again.");
+  } catch {
+    if (hotkeyLease === lease && hotkeyDialog.open) {
+      showHotkeyCheck("blocked", "Could not check this shortcut. Try again.");
+    }
+  }
+}
+
+function useSavedHotkey(value) {
+  settings.hotkey = value;
+  renderChips();
+  syncSettings();
+  setStatus(S);
+  hotkeyDialog.close();
+  toast("Hotkey saved.");
+}
+
+$("#btn-hotkey-card").onclick = event => openHotkeyPicker(event.currentTarget);
 hotkeyCapture.addEventListener("keydown", event => {
   if (event.key === "Tab" || event.key === "Escape") return;
   event.preventDefault();
   event.stopPropagation();
-  if (hotkeySaving || event.repeat) return;
-  const value = hotkeyCodes[event.code], ownAltGraph = event.code === "AltRight" && event.key === "AltGraph";
-  if (hotkeyPress || !value || event.metaKey || (event.shiftKey && event.code !== "ShiftRight")
-      || (event.ctrlKey && event.code !== "ControlRight" && !ownAltGraph)
-      || (event.altKey && event.code !== "AltRight")) {
-    hotkeyPress = null;
-    $("#hotkey-key").textContent = "Try one of the supported keys";
-    return;
+  if (hotkeyMode !== "listening" || event.repeat || event.isComposing || event.keyCode === 229) return;
+  $("#hotkey-options").textContent = "";
+  const code = event.code || event.key;
+  hotkeyHeld.add(code);
+  if (event.key === "AltGraph" || event.getModifierState("AltGraph")) {
+    hotkeyBlock = "AltGr enters characters on this keyboard. Choose another shortcut.";
   }
-  hotkeyPress = event.code;
-  $("#hotkey-key").textContent = Object.entries(options.hotkey).find(([, key]) => key === value)?.[0] || event.key;
+  const mods = [["ctrl", event.ctrlKey], ["alt", event.altKey], ["shift", event.shiftKey],
+    ["win", event.metaKey || code.startsWith("Meta")]].filter(([, active]) => active).map(([name]) => name);
+  const modifier = /^(?:Control|Alt|Shift|Meta)(?:Left|Right)$/.test(code);
+  if (!modifier) {
+    if (hotkeyTrigger && hotkeyTrigger.code !== code) hotkeyMultiple = true;
+    hotkeyTrigger = {code, key:hotkeyTriggerValue(event.key, code)};
+  }
+  if (!hotkeyTrigger || hotkeyHeld.has(hotkeyTrigger.code)) {
+    const key = hotkeyTrigger?.key;
+    const single = hotkeySingles[hotkeyTrigger?.code || code];
+    const chord = mods.length && key ? [...mods, key].join("+") : "";
+    const canUseSingle = modifier ? mods.length <= 1 : mods.length === 0;
+    hotkeyChoice = chord || (canUseSingle && !key ? single : "")
+      || (!mods.length && /^f\d+$/.test(key || "") ? key : "");
+    const label = hotkeyChoice || mods.join("+");
+    const display = $("#hotkey-key");
+    if (label) renderHotkeyKeycaps(display, hotkeyLabel(label));
+    else display.textContent = "Try a function key or a combination";
+  }
+  if (mods.includes("win")) hotkeyBlock = reservedHotkeyMessage("win");
+  if (hotkeyChoice) hotkeyBlock ||= reservedHotkeyMessage(hotkeyChoice);
 });
-hotkeyCapture.addEventListener("keyup", async event => {
-  if (event.code !== hotkeyPress || !hotkeyLease || hotkeySaving) return;
+hotkeyCapture.addEventListener("keyup", event => {
+  if (hotkeyMode !== "listening" || !hotkeyLease) return;
+  if (!hotkeyHeld.delete(event.code || event.key) && !hotkeyChoice && !hotkeyBlock) return;
   event.preventDefault();
   event.stopPropagation();
-  hotkeyPress = null;
-  hotkeySaving = true;
-  $("#hotkey-cancel").disabled = true;
-  $("#hotkey-key").textContent = "Saving…";
+  if (hotkeyHeld.size || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
+  if (hotkeyMultiple || (!hotkeyChoice && !hotkeyBlock)) {
+    resetHotkeyKeys();
+    $("#hotkey-options").textContent = "Try a function key, or hold Ctrl, Alt or Shift and press one other key.";
+    return;
+  }
+  checkHotkeyChoice();
+});
+hotkeyCapture.addEventListener("blur", () => { if (hotkeyMode === "listening") resetHotkeyKeys(); });
+hotkeyAgain.onclick = () => { resetHotkeyPicker(); hotkeyCapture.focus(); };
+hotkeyUse.addEventListener("keydown", event => {
+  if (event.key === "Enter") event.preventDefault();
+});
+hotkeyUse.addEventListener("keyup", event => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  hotkeyUse.click();
+});
+hotkeyUse.onclick = async () => {
+  const lease = hotkeyLease;
+  if (!lease || hotkeyMode !== "checked" || hotkeyUse.classList.contains("hidden")) return;
+  hotkeyMode = "saving";
+  hotkeyCancel.disabled = hotkeyAgain.disabled = hotkeyUse.disabled = true;
+  $("#hotkey-options").textContent = "Saving…";
   try {
-    const result = await api().finish_hotkey_capture(hotkeyLease, hotkeyCodes[event.code]);
-    if (!result.ok) toast("Hotkey wasn’t saved. Open Hotkey to try again.", true);
-    else {
-      settings.hotkey = result.hotkey;
-      renderChips();
-      setStatus(S);
-      toast("Hotkey saved.");
+    const result = await api().finish_hotkey_capture(lease.token, hotkeyChoice, hotkeyUse.dataset.warning === "true");
+    if (result?.ok && result.hotkey === hotkeyChoice) {
+      useSavedHotkey(result.hotkey);
+      return;
     }
+    showHotkeyCheck("blocked", result?.message || "Could not save this shortcut. Pick again to retry.");
   } catch {
-    toast("Hotkey save could not be confirmed. Check the displayed shortcut before trying again.", true);
     try {
-      settings.hotkey = (await api().get_settings()).hotkey;
-      renderChips();
-      setStatus(S);
-    } catch { /* Reopening the app can recover the displayed saved choice. */ }
+      if ((await api().get_settings()).hotkey === hotkeyChoice) {
+        useSavedHotkey(hotkeyChoice);
+        return;
+      }
+    } catch { /* Settings can be checked again after reconnecting. */ }
+    showHotkeyCheck("blocked", "Could not confirm the save. Check your saved shortcut before trying again.");
   } finally {
-    hotkeySaving = false;
-    $("#hotkey-cancel").disabled = false;
-    hotkeyDialog.close();
+    hotkeyCancel.disabled = hotkeyAgain.disabled = hotkeyUse.disabled = false;
+    if (hotkeyMode !== "saving" && hotkeyDialog.open) {
+      if (performance.now() >= lease.expiresAt) {
+        hotkeyDialog.close();
+        toast("Hotkey setup timed out. Click Hotkey to try again.");
+      } else hotkeyAgain.focus();
+    }
   }
-});
-hotkeyCapture.addEventListener("blur", () => { hotkeyPress = null; });
-$("#hotkey-cancel").onclick = () => hotkeyDialog.close();
-hotkeyDialog.addEventListener("cancel", event => { if (hotkeySaving) event.preventDefault(); });
-window.addEventListener("blur", () => { if (hotkeyDialog.open && !hotkeySaving) hotkeyDialog.close(); });
+};
+hotkeyCancel.onclick = () => hotkeyDialog.close();
+hotkeyDialog.addEventListener("cancel", event => { if (hotkeyMode === "saving") event.preventDefault(); });
+window.addEventListener("blur", () => { if (hotkeyDialog.open && hotkeyMode !== "saving") hotkeyDialog.close(); });
 hotkeyDialog.addEventListener("close", async () => {
-  clearTimeout(hotkeyTimer);
-  hotkeyPress = null;
-  const token = hotkeyLease;
-  try { if (token) await api().finish_hotkey_capture(token); }
+  const lease = hotkeyLease;
+  if (!lease) return;
+  clearTimeout(lease.timer);
+  if (lease.opener.isConnected && document.hasFocus()) lease.opener.focus();
+  try { await api().finish_hotkey_capture(lease.token); }
   catch { /* The native lease expires even if the bridge disconnects. */ }
-  finally {
-    hotkeyLease = null;
-    if (page === "dictate" && document.hasFocus()) $("#btn-hotkey-card").focus();
-  }
+  finally { hotkeyLease = null; }
 });
+
 $(".main").addEventListener("focusin", event => {
   if (!event.target.matches(".frame-input, .editor")) return;
   const frame = event.target.closest("fieldset.frame"), workspace = $(".main");
@@ -393,6 +575,21 @@ function promptRouteSummary(stage) {
   if (provider && !provider.configured) return `${name} API key missing. Set ${provider.key_env} on this PC.`;
   return `${name}${provider?.model ? " · " + provider.model : ""}. Paid cloud. Text is sent when you ask for this step.`;
 }
+function hotkeyLabel(value) {
+  const labels = {ctrl_r:"Right Ctrl", shift_r:"Right Shift", alt_r:"Right Alt", pause:"Pause", scroll_lock:"Scroll Lock",
+    ctrl:"Ctrl", alt:"Alt", shift:"Shift", win:"Win", space:"Space", arrow_left:"Left Arrow", arrow_right:"Right Arrow",
+    arrow_up:"Up Arrow", arrow_down:"Down Arrow", home:"Home", end:"End", insert:"Insert", delete:"Delete",
+    page_up:"Page Up", page_down:"Page Down", backspace:"Backspace", enter:"Enter"};
+  return Object.entries(options.hotkey || {}).find(([, binding]) => binding === value)?.[0]
+    || (value || "ctrl_r").split("+").map(key => labels[key] || key.toUpperCase()).join(" + ");
+}
+function renderHotkeyKeycaps(element, label) {
+  const keys = label.split(" + ");
+  element.classList.toggle("combo", keys.length > 1);
+  element.classList.toggle("compact", keys.length >= 4 || keys.some(key => key.length > 12));
+  const html = keys.map((key, i) => `<span class="hotkey-part">${i ? "<span>+</span>" : ""}<kbd>${esc(key)}</kbd></span>`).join("");
+  if (element.innerHTML !== html) element.innerHTML = html;
+}
 function chip(key, label, icon, customChoices) {
   const opts = options[key] || {};
   const choices = customChoices ?? Object.entries(opts).map(([n, v]) => `<option value="${esc(v)}"${settings[key] === v ? " selected" : ""}>${esc(n)}</option>`).join("");
@@ -414,14 +611,10 @@ function renderChips() {
       : settings.judge === "anthropic" ? chip("judge_model", "Claude judge", "i-chart") : "")
     + `<div class="muted">Write · ${esc(promptRouteSummary("engine"))}<br>Check · ${esc(promptRouteSummary("judge"))}</div>`);
   $$(".chip select").forEach(s => s.onchange = () => setSetting(s.dataset.key, s.value));
-  const name = k => Object.entries(options[k] || {}).find(([, v]) => v === settings[k])?.[0] || settings[k];
-  const hotkeyName = String(name("hotkey") || "Right Ctrl");
-  const keys = hotkeyName.split(" + "), keyGroup = $("#hero-key");
-  keyGroup.classList.toggle("combo", keys.length > 1);
-  keyGroup.classList.toggle("compact", keys.length >= 4 || keys.some(key => key.length > 12));
-  stableHTML(keyGroup, keys.map((key, i) => `<span class="hotkey-part">${i ? "<span>+</span>" : ""}<kbd>${esc(key)}</kbd></span>`).join(""));
+  const hotkeyName = hotkeyLabel(settings.hotkey);
+  renderHotkeyKeycaps($("#hero-key"), hotkeyName);
   $("#btn-hotkey-card").setAttribute("aria-label", "Change dictation hotkey, " + hotkeyName);
-  $("#composer-key").textContent = name("hotkey");
+  $("#composer-key").textContent = hotkeyName;
   $("#lab-model-label").textContent = cloudActive ? (missingKey ? "API key needed" : "Cloud API") : cloudSelected ? "Cloud disabled" : "Local model";
   $("#rail-processing").textContent = cloudActive ? (missingKey ? "API key needed" : "Cloud API enabled") : cloudSelected ? "Cloud off" : "Local processing";
   if (box && sel) $(`#${box} ${sel}`)?.focus(); // the chip row is rebuilt when a value changes; keep keyboard focus on the same control
@@ -527,7 +720,8 @@ function renderSettings() {
   };
   const control = key => {
     const [k, l, , t] = rows.get(key);
-    return t === "toggle" ? `<button class="switch ${settings[k] ? "on" : ""}" data-toggle="${k}" role="switch" aria-checked="${!!settings[k]}" aria-label="${l}">${swHTML(!!settings[k])}</button>`
+    return k === "hotkey" ? `<button type="button" class="btn" id="settings-hotkey" data-key="hotkey" aria-haspopup="dialog" aria-controls="hotkey-dialog"></button>`
+      : t === "toggle" ? `<button class="switch ${settings[k] ? "on" : ""}" data-toggle="${k}" role="switch" aria-checked="${!!settings[k]}" aria-label="${l}">${swHTML(!!settings[k])}</button>`
       : t === "speech" ? `<select id="speech-model" data-key="speech_model" data-available="${speechChoices().available}" aria-label="${l}" aria-describedby="speech-stage-summary speech-model-note speech-model-status"${speechChoices().available&&!speechModelSavePending?"":" disabled"}>${speechChoices().html}</select>`
       : t === "model" ? `<select id="local-model" aria-label="${l}" aria-describedby="model-status"></select><button class="btn quiet" id="refresh-models">Refresh list</button>`
       : t === "prompt-model" ? `<select data-key="${k}" aria-label="${l}">${promptLocalChoices(k)}</select>`
@@ -556,6 +750,7 @@ function renderSettings() {
     </details>`;
   $$("#settings-grid select").forEach(s => s.onchange = () => setSetting(s.dataset.key, s.value));
   $$("#settings-grid .switch").forEach(b => b.onclick = () => setSetting(b.dataset.toggle, !settings[b.dataset.toggle]));
+  $("#settings-hotkey").onclick = event => openHotkeyPicker(event.currentTarget);
   populateMicrophones();
   $("#use-default-microphone").onclick = async () => {
     await setSetting("microphone", "");
@@ -587,6 +782,12 @@ function refreshSettingsDetails() {
 }
 function syncSettings() {
   $$("#settings-grid select[data-key]").forEach(s => { const v = String(settings[s.dataset.key] ?? ""); if (s.value !== v && [...s.options].some(o => o.value === v)) s.value = v; });
+  const hotkeyButton = $("#settings-hotkey");
+  if (hotkeyButton) {
+    const label = hotkeyLabel(settings.hotkey);
+    hotkeyButton.textContent = label;
+    hotkeyButton.setAttribute("aria-label", "Change dictation hotkey, " + label);
+  }
   $$("#settings-grid .switch").forEach(b => setSwitch(b, !!settings[b.dataset.toggle]));
   const m = $("#local-model"); if (m && settings.local_model && [...m.options].some(o => o.value === settings.local_model)) m.value = settings.local_model;
   $$("#settings-grid [data-route-summary]").forEach(el => {
@@ -1459,7 +1660,8 @@ const commands = () => [
   { l: "Go to History", k: "Ctrl+3", f: () => show("history") }, { l: "Go to Settings", k: "Ctrl+4", f: () => show("settings") },
   { l: "Improve prompt", f: () => $("#btn-improve").click() }, { l: "Get feedback", f: () => $("#btn-score").click() },
   { l: "Paste draft", k: "Ctrl+Enter", f: () => $("#btn-paste").click() }, { l: "Save favorite", k: "Ctrl+S", f: () => $("#btn-save").click() }, { l: "New draft", f: () => $("#btn-new").click() },
-  ...["hotkey", "target", "engine", "judge", "judge_model", "style"].flatMap(k => Object.entries(options[k] || {}).map(([n, v]) => ({ l: `${SETTING_ROWS.find(r => r[0] === k)[1]}: ${n}`, f: () => setSetting(k, v) }))),
+  { l: "Change dictation hotkey", f: () => openHotkeyPicker(document.activeElement) },
+  ...["target", "engine", "judge", "judge_model", "style"].flatMap(k => Object.entries(options[k] || {}).map(([n, v]) => ({ l: `${SETTING_ROWS.find(r => r[0] === k)[1]}: ${n}`, f: () => setSetting(k, v) }))),
   { l: `AI clean-up: ${settings.cleanup ? "turn off" : "turn on"}`, f: () => setSetting("cleanup", !settings.cleanup) },
 ];
 let palSel = 0, paletteOpener = null, paletteItems = [];
@@ -1531,7 +1733,7 @@ function setStatus(st) {
   const cls = stoppingPreview ? "busy" : s === "recording" ? recordingStarting ? "busy" : "recording" : s === "idle" ? "idle" : s === "error" ? "error" : s === "loading" ? "" : "busy";
   const recordingLabel = st.recording_ready == null ? "recording" : st.recording_ready ? "listening" : "starting…";
   const label = stoppingPreview ? st.pending_dictations>0 ? "finishing dictation…" : "stopping preview…" : s === "recording" ? recordingLabel + (st.locked ? " · hands-free" : "") : s === "loading" ? (st.last_error ? "failed to start" : "loading…") : s;
-  const keyName = Object.entries(options.hotkey || {}).find(([, value]) => value === settings.hotkey)?.[0] || "the dictation key";
+  const keyName = hotkeyLabel(settings.hotkey);
   setDisplayedProperty($("#dictate-heading"), "textContent", s === "recording" ? recordingStarting ? "Starting…" : "Listening" : s === "loading" ? "Getting ready…" : s === "error" ? "Needs your attention" : st.busy || stoppingPreview ? "Finishing your words…" : "Ready when you are");
   setDisplayedProperty($("#dictate-instruction"), "textContent", s === "recording" ? recordingStarting ? "Opening your microphone. Wait for the ready cue." : st.locked ? `Press ${keyName} or choose Finish recording. Esc cancels.` : "Release the hotkey to finish. Esc cancels." : s === "loading" ? "Loading speech. Your saved words remain available." : `Press ${keyName} to start. Press it again to finish.`);
   for (const el of $$(".status")) {

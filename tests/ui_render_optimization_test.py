@@ -28,7 +28,7 @@ const context=vm.createContext({settings:{cleanup:true,hotkey:'ctrl_r'},options:
 const bars=source.slice(source.indexOf('// ---------- bars ----------'),source.indexOf('// ---------- chips ----------'));
 const status=source.slice(source.indexOf('// ---------- polling ----------'),source.indexOf('let lastErr ='));
 assert(bars.includes('function drawBars(')&&status.includes('function setStatus('));
-vm.runInContext(bars+status,context);
+vm.runInContext(source.slice(source.indexOf('function hotkeyLabel('),source.indexOf('function chip('))+bars+status,context);
 function render(state,levels=[]){context.state=state;context.levels=levels;vm.runInContext('setStatus(state);drawBars(levels)',context);}
 const idle={state:'idle',busy:'',last_error:'',llm_ok:true,speech_retry_ready:false,speech_runtime:{state:'ready'}};
 render(idle);const first=writes;for(let i=0;i<100;i++)render(idle);const idleRepeated=writes-first;

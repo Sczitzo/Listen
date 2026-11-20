@@ -444,9 +444,12 @@ select, input, .chip, .status, .switch, .rev, kbd { font-family:var(--control-fo
 .hotkey-dialog h2 { font-size:20px; margin:0 0 8px; }
 .hotkey-dialog p { margin:0 0 16px; }
 .hotkey-capture { width:100%; min-height:88px; padding:16px; border:1px solid var(--accent); border-radius:8px; color:var(--fg); background:var(--bg); }
-.hotkey-capture kbd { font:600 24px/1.4 var(--control-font); overflow-wrap:anywhere; border:0; background:none; }
+.hotkey-capture .hotkey-keys { --key-size:20px; font:600 16px/1.4 var(--control-font); }
 .hotkey-capture:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
 .hotkey-dialog .hotkey-options { margin:12px 0 0; font-size:12px; }
+.hotkey-conflict { margin-top:12px; padding:10px 12px; border:1px solid var(--line); border-radius:var(--r); background:var(--surface-2); }
+.hotkey-conflict strong { color:var(--amber); }
+.hotkey-dialog .hotkey-conflict p { margin:4px 0 0; }
 .legacy-lab-tools { font-size:14px; }
 .legacy-lab-tools > summary { cursor:pointer; color:var(--accent); }
 .legacy-lab-tools > :not(summary) { margin-top:8px; }
