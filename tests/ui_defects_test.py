@@ -86,6 +86,14 @@ await run('chip focus kept after toggle re-render',async()=>{
  vm.runInContext(cut('const htmlCache','// ---------- state')+cut('function chip(','async function setSetting('),c);
  vm.runInContext('renderChips()',c);
  assert.equal(R('#chips-dictate [data-toggle="cleanup"]').focusCount,1,'keyboard focus was not restored to the toggle chip');
+ assert(R('#hero-key').innerHTML.includes('<kbd>Right Ctrl</kbd>'),'the single key lost its side');
+ const longer='Ctrl + Alt + Shift + F8';
+ c.options.hotkey[longer]='combo';
+ c.settings.hotkey='combo';
+ vm.runInContext('renderChips()',c);
+ assert.deepEqual([...R('#hero-key').innerHTML.matchAll(/<kbd>(.*?)<\/kbd>/g)].map(m=>m[1]),['Ctrl','Alt','Shift','F8']);
+ assert(R('#hero-key').cls.has('compact'),'longer shortcut did not get compact type');
+ assert.equal(R('#btn-hotkey-card').attrs['aria-label'],'Change dictation hotkey, '+longer);
 });
 await run('settings page updated in place (On/Off text, aria-checked)',async()=>{
  const sw=el(),label=el();sw.dataset.toggle='cleanup';sw.querySelector=()=>label;

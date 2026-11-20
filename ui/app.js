@@ -224,6 +224,10 @@ function show(p, focus = true) {
 }
 $$(".rail-btn").forEach(b => b.onclick = () => show(b.dataset.page));
 $$("[data-goto]").forEach(b => b.onclick = () => show(b.dataset.goto));
+$("#btn-hotkey-card").onclick = () => {
+  show("settings", false);
+  $('#settings-grid select[data-key="hotkey"]')?.focus();
+};
 $(".main").addEventListener("focusin", event => {
   if (!event.target.matches(".frame-input, .editor")) return;
   const frame = event.target.closest("fieldset.frame"), workspace = $(".main");
@@ -268,8 +272,11 @@ function renderChips() {
   $$(".chip[data-toggle]").forEach(b => b.onclick = () => setSetting(b.dataset.toggle, !settings[b.dataset.toggle]));
   const name = k => Object.entries(options[k] || {}).find(([, v]) => v === settings[k])?.[0] || settings[k];
   const hotkeyName = String(name("hotkey") || "Right Ctrl");
-  $("#hero-key").textContent = hotkeyName.replace(/^Right /, "");
-  $("#hero-key-side").textContent = hotkeyName.startsWith("Right ") ? "right key" : "hold to speak";
+  const keys = hotkeyName.split(" + "), keyGroup = $("#hero-key");
+  keyGroup.classList.toggle("combo", keys.length > 1);
+  keyGroup.classList.toggle("compact", keys.length >= 4 || keys.some(key => key.length > 12));
+  stableHTML(keyGroup, keys.map((key, i) => `<span class="hotkey-part">${i ? "<span>+</span>" : ""}<kbd>${esc(key)}</kbd></span>`).join(""));
+  $("#btn-hotkey-card").setAttribute("aria-label", "Change dictation hotkey, " + hotkeyName);
   $("#composer-key").textContent = name("hotkey");
   $("#lab-model-label").textContent = cloudActive ? "Cloud API" : cloudSelected ? "Cloud disabled" : "Local model";
   $("#rail-processing").textContent = cloudActive ? "Cloud API enabled" : "Local processing";
@@ -303,6 +310,7 @@ async function setSetting(k, v) {
     if(previewChange&&settingPreviewVersion!==previewSettingVersion)return;
     settings=settingPreviewVersion===previewSettingVersion?latest:{...latest,live_preview:settings.live_preview};
     renderChips();
+    if (k === "hotkey") setStatus(S);
     if (page === "settings") syncSettings();
   } catch {
     toast("Setting status could not be refreshed. Reopen Settings to check your choice.",true);
@@ -315,7 +323,7 @@ async function setSetting(k, v) {
 
 // ---------- settings page ----------
 const SETTING_ROWS = [
-  ["hotkey", "Hotkey", "Hold to dictate, release to paste. In the Prompt lab it dictates into the focused box."],
+  ["hotkey", "Hotkey", "Press to start or finish. You can also hold and release. In Prompt Lab, it dictates into the focused box."],
   ["speech_model", "Speech recognition model", "Choose a model installed on this computer. Finish or cancel a recording before changing it.", "speech"],
   ["microphone", "Microphone", "Reconnect your saved microphone or explicitly choose the Windows default. Changes apply to the next recording."],
   ["live_preview", "Live transcript preview", "Show raw, provisional speech locally while recording. Updates may pause when processing is slow; final text is generated when you finish.", "toggle"],
@@ -1228,7 +1236,7 @@ function setStatus(st) {
   const label = stoppingPreview ? st.pending_dictations>0 ? "finishing dictation…" : "stopping preview…" : s === "recording" ? recordingLabel + (st.locked ? " · hands-free" : "") : s === "loading" ? (st.last_error ? "failed to start" : "loading…") : s;
   const keyName = Object.entries(options.hotkey || {}).find(([, value]) => value === settings.hotkey)?.[0] || "the dictation key";
   setDisplayedProperty($("#dictate-heading"), "textContent", s === "recording" ? recordingStarting ? "Starting…" : "Listening" : s === "loading" ? "Getting ready…" : s === "error" ? "Needs your attention" : st.busy || stoppingPreview ? "Finishing your words…" : "Ready when you are");
-  setDisplayedProperty($("#dictate-instruction"), "textContent", s === "recording" ? recordingStarting ? "Opening your microphone. Wait for the ready cue." : st.locked ? `Tap ${keyName} or choose Finish recording. Esc cancels.` : "Release the dictation key to finish. Esc cancels." : s === "loading" ? "Loading speech. Your saved words remain available." : `Hold ${keyName} to speak. Release to send your words, or tap for hands-free.`);
+  setDisplayedProperty($("#dictate-instruction"), "textContent", s === "recording" ? recordingStarting ? "Opening your microphone. Wait for the ready cue." : st.locked ? `Press ${keyName} or choose Finish recording. Esc cancels.` : "Release the hotkey to finish. Esc cancels." : s === "loading" ? "Loading speech. Your saved words remain available." : `Press ${keyName} to start. Press it again to finish.`);
   for (const el of $$(".status")) {
     setDisplayedProperty($(".dot", el), "className", "dot " + cls);
     setDisplayedProperty($(".status-text", el), "textContent", label + (settings.cleanup && !st.llm_ok && s === "idle" ? st.cleanup_warming ? " · AI clean-up loading…" : " · AI clean-up offline" : ""));

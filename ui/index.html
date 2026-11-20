@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Listen</title>
-  <link rel="stylesheet" href="app.css?v=20261119-listen19-history">
+  <link rel="stylesheet" href="app.css?v=20261119-listen19-hotkey">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -61,12 +61,12 @@
     <section class="page" data-page="dictate">
       <header class="page-head"><div><h1 tabindex="-1">Dictate</h1><p class="page-intro">Your voice, where you’re working.</p></div><div class="status" id="status-dictate"><span class="dot"></span><span class="status-text">idle</span></div></header>
       <section class="dictate-center" aria-label="Recording controls">
-        <div class="key-visual" aria-hidden="true"><span>In Listen</span><kbd id="hero-key">Ctrl</kbd><span id="hero-key-side">right key</span></div>
+        <button class="key-visual" id="btn-hotkey-card" type="button" aria-label="Change dictation hotkey, Right Ctrl"><span>Hotkey</span><span class="hotkey-keys" id="hero-key" aria-hidden="true"><kbd>Right Ctrl</kbd></span></button>
         <div class="ready-instruction">
           <div class="hero-title" id="hero-title"><span class="quiet-instrument" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><h2 id="dictate-heading">Ready when you are</h2></div>
-          <p class="hero-sub" id="dictate-instruction">Hold Right Ctrl to speak. Release to send your words, or tap for hands-free.</p>
+          <p class="hero-sub" id="dictate-instruction">Press Right Ctrl to start. Press it again to finish.</p>
           <div class="actions recording-actions"><button class="btn" id="btn-finish" disabled>Finish recording</button><button class="btn quiet" id="btn-cancel" disabled>Cancel recording</button><button class="btn hidden" id="btn-retry">Retry startup</button>
-            <details class="how"><summary>How it works</summary><p>Tap to go hands-free, tap again to finish or Esc to discard. Hotkey plus another key is a normal shortcut. Begin with “Hey, prompt engineer this” followed by your request to use your selected Engineer instead of cleanup.</p></details>
+            <details class="how"><summary>How it works</summary><p>You can also hold the hotkey while speaking, then release it to finish. Press Esc to discard. Hotkey plus another key is a normal shortcut. Begin with “Hey, prompt engineer this” followed by your request to use your selected Engineer instead of cleanup.</p></details>
           </div>
         </div>
         <div class="hero-bars" id="bars-dictate" aria-hidden="true"></div>
@@ -272,6 +272,6 @@
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 </div>
 <script src="model-benchmarks.js?v=20261119-listen19"></script>
-<script src="app.js?v=20261119-listen19-history"></script>
+<script src="app.js?v=20261119-listen19-hotkey"></script>
 </body>
 </html>

@@ -347,10 +347,16 @@ select, input, .chip, .status, .switch, .rev, kbd { font-family:var(--control-fo
 .frame:has(>.editor:focus,>.frame-input:focus) { border-color:var(--focus); }
 .card { box-shadow:none; }
 .page-intro { color:var(--muted); font-size:13px; margin:7px 0 0; }
-.dictate-center { position:relative; display:grid; grid-template-columns:100px minmax(0,1fr); align-items:center; gap:28px; padding:20px 0 28px; border-bottom:1px solid var(--line); }
-.key-visual { width:100px; min-height:100px; display:grid; place-content:center; gap:3px; padding:10px 8px; text-align:center; background:var(--surface); border:1px solid var(--line); border-radius:12px; }
+.dictate-center { position:relative; display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:clamp(14px,3.2vw,26px); padding:20px 0 28px; border-bottom:1px solid var(--line); }
+.key-visual { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; inline-size:max-content; min-inline-size:106px; max-inline-size:min(240px,100%); min-block-size:70px; padding:8px 10px; text-align:center; background:var(--surface); border:1px solid var(--line); border-radius:12px; }
+.key-visual:hover { background:var(--surface-2); border-color:var(--accent); }
+.key-visual:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
 .key-visual>span { font:12px/1.4 var(--control-font); color:var(--muted); }
-.key-visual>kbd { font:600 27px/1.25 var(--font); border:0; background:none; padding:0; overflow-wrap:anywhere; }
+.hotkey-keys { --key-size:18px; display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:4px; min-inline-size:0; }
+.hotkey-keys.combo { --key-size:16px; }
+.hotkey-keys.compact { --key-size:14px; }
+.hotkey-part { display:inline-flex; align-items:center; gap:4px; max-inline-size:100%; }
+.hotkey-part kbd { min-inline-size:2em; padding:3px 6px; border:1px solid var(--line-ctl); border-bottom-width:2px; border-radius:6px; background:var(--bg); color:var(--fg); font:600 var(--key-size)/1.25 var(--control-font); overflow-wrap:anywhere; }
 .ready-instruction { min-width:0; }
 .hero-bars { position:absolute; right:0; bottom:17px; width:82px; gap:2px; opacity:0; }
 .recording .hero-bars { opacity:.65; }
@@ -454,9 +460,9 @@ select, input, .chip, .status, .switch, .rev, kbd { font-family:var(--control-fo
   .page[data-page="lab"].active{gap:10px}
   .page[data-page="lab"] .draft-actions{gap:6px}
   .page[data-page="lab"] .draft-actions .btn{padding-inline:9px}
-  .dictate-center{grid-template-columns:86px minmax(0,1fr);gap:24px;padding:11px 0 20px}
-  .key-visual{width:86px;min-height:86px}
+  .dictate-center{padding:11px 0 20px}
   .hero-title h2{font-size:25px}
   .text-row{padding-bottom:15px;gap:12px}
   .stage-row{grid-template-columns:132px minmax(0,1fr);gap:16px}
 }
+@media(max-width:520px) { .dictate-center { grid-template-columns:minmax(0,1fr); } }
