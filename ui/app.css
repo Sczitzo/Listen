@@ -41,7 +41,6 @@ kbd { font: 11px/1 var(--font); padding: 3px 6px; border: 1px solid var(--line-s
 .rail-btn.active { border-color:color-mix(in srgb,var(--accent) 55%,transparent); background:var(--accent-soft); color:var(--fg); }
 .rail-btn:focus-visible, .btn:focus-visible, .chip:focus-visible, .icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rail-spacer { flex: 1; }
-.rail-status { padding: 8px 0 8px 8px; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); transition: background .2s, box-shadow .2s; }
 .dot.recording { background: var(--rec); box-shadow: 0 0 0 4px color-mix(in srgb, var(--rec) 18%, transparent); }
 .dot.busy { background: var(--amber); }
@@ -262,6 +261,13 @@ h1 { font-size: 29px; font-weight: 600; margin: 0; letter-spacing: -0.025em; lin
 .chip { max-width:100%; height:auto; min-height:30px; }.chip select { min-width:0; max-width:100%; }.chip:focus-within { outline:2px solid var(--accent);outline-offset:2px; }
 button:focus-visible,select:focus-visible,summary:focus-visible,input:focus-visible,textarea:focus-visible { outline:2px solid var(--accent);outline-offset:3px; }
 .notice { margin:8px 16px 0;padding:8px 12px;background:var(--surface-2);color:var(--fg);border:1px solid var(--line-strong);border-radius:var(--r); }
+.health-notice { display:flex; align-items:center; gap:6px 12px; flex-wrap:wrap; }
+.health-notice span { flex:1 1 16rem; }
+.health-notice .btn { min-height:32px; padding-block:3px; white-space:nowrap; }
+.health-notice[data-level="warning"], .health-notice.warning { border-color:var(--amber); }
+.health-notice.error { border-color:var(--rec); }
+.connection-wait .status { visibility:hidden; }
+.connection-wait #speech-notice { display:none; }
 #bridge-status { color:var(--amber); }
 #banners { flex:none; }
 .banners-bar { display:none;align-items:center;gap:8px;margin:8px 16px 0;padding:6px 12px;background:var(--surface-2);border:1px solid var(--line-strong);border-radius:var(--r);font-size:12px; }
@@ -361,7 +367,6 @@ h2 { font-size:13px;margin:4px 0 8px; } .settings-grid { grid-template-columns:1
 select, input, .chip, .status, .switch, .rev, kbd { font-family:var(--control-font); }
 :focus-visible { outline-color:var(--focus); }
 .btn.primary:hover { background:var(--accent-hover); border-color:var(--accent-hover); filter:none; }
-.rail-status { display:flex; align-items:center; gap:8px; }
 .dot.recording { background:var(--accent); box-shadow:none; }
 .frame { scroll-margin-block:18px; }
 .frame:has(>.editor:focus,>.frame-input:focus) { border-color:var(--focus); }

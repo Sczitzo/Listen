@@ -46,7 +46,7 @@ function setup(){
   api:()=>bridge,$,$$,page:'dictate',toast:(...args)=>notices.push(args),connection:x=>connections.push(x),askConfirm:async()=>true,syncSettings(){},
   options:{},esc:x=>String(x),renderChips(){},renderSettings(){},renderLearned(){},refreshModels(){},
   loadHistory:async()=>{},loadRecent:async()=>{},loadLab:async()=>{},loadSuggestions(){},loadRetained:async()=>{},
-  loadDeliveryStatus:async()=>{},drawBars(){},show(){},setTimeout(){},
+  loadDeliveryStatus:async()=>{},drawBars(){},show(){},setTimeout(){},clearTimeout(){},
   bridgeLost:false,lastErr:'',retainedVersion:0,lastLabVer:0,lastBusy:'',lastHistLen:0,lab:{},editorDirty:false,composerDirty:false,
   feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0});
  vm.runInContext(source.slice(source.indexOf('function hotkeyLabel('),source.indexOf('function chip('))+preview+setting+clear+status+polling+actions,context);

@@ -167,7 +167,20 @@ mock.clear_private_data=async(scope,confirmation)=>{if(confirmation!=="DELETE")r
 const demo = new URLSearchParams(location.search).get("demo") === "1";
 let bridgeReady = !!window.pywebview?.api, bridgeLost = false, booted = false;
 const api = () => { if (demo) return mock; if (!bridgeReady || !window.pywebview?.api) throw new Error("Desktop connection unavailable"); return window.pywebview.api; };
-function connection(message) { const box = $("#bridge-status"); box.classList.toggle("hidden", !message); if (box.textContent !== message) box.textContent = message; }
+function connection(message, retry) {
+  const status = $("#bridge-status"), button = $("#btn-check-connection");
+  const wasWaiting = document.body.classList.contains("connection-wait");
+  $("#bridge-notice").classList.toggle("hidden", !message);
+  status.classList.toggle("hidden", !message);
+  if (status.textContent !== message) status.textContent = message;
+  button.classList.toggle("hidden", !retry);
+  button.onclick = retry || null;
+  document.body.classList.toggle("connection-wait", !!message);
+  if (message && !document.body.classList.contains("recording")) {
+    setDisplayedProperty($("#dictate-heading"), "textContent", "Checking Listen…");
+    setDisplayedProperty($("#dictate-instruction"), "textContent", "See the connection status above.");
+  } else if (!message && wasWaiting && S.state) setStatus(S);
+}
 function recovery(message) {
   const el = $("#recovery-status");
   if (el.textContent !== message) {
@@ -633,9 +646,11 @@ function hotkeyLabel(value) {
 }
 function renderHotkeyKeycaps(element, label) {
   const keys = label.split(" + ");
+  const arrows = {"Left Arrow":"←", "Right Arrow":"→", "Up Arrow":"↑", "Down Arrow":"↓"};
   element.classList.toggle("combo", keys.length > 1);
   element.classList.toggle("compact", keys.length >= 4 || keys.some(key => key.length > 12));
-  const html = keys.map((key, i) => `<span class="hotkey-part">${i ? "<span>+</span>" : ""}<kbd>${esc(key)}</kbd></span>`).join("");
+  const html = keys.map((key, i) => `<span class="hotkey-part">${i ? "<span>+</span>" : ""}<kbd>${Object.hasOwn(arrows, key)
+    ? `<span aria-hidden="true">${arrows[key]}</span><span class="sr-only">${key}</span>` : esc(key)}</kbd></span>`).join("");
   if (element.innerHTML !== html) element.innerHTML = html;
 }
 function chip(key, label, icon, customChoices) {
@@ -664,7 +679,6 @@ function renderChips() {
   $("#btn-hotkey-card").setAttribute("aria-label", "Change dictation hotkey, " + hotkeyName);
   $("#composer-key").textContent = hotkeyName;
   $("#lab-model-label").textContent = cloudActive ? (missingKey ? "API key needed" : "Cloud API") : cloudSelected ? "Cloud disabled" : "Local model";
-  $("#rail-processing").textContent = cloudActive ? (missingKey ? "API key needed" : "Cloud API enabled") : cloudSelected ? "Cloud off" : "Local processing";
   if (box && sel) $(`#${box} ${sel}`)?.focus(); // the chip row is rebuilt when a value changes; keep keyboard focus on the same control
 }
 async function setSetting(k, v) {
@@ -1774,35 +1788,49 @@ function syncBanners() {
   const text = first ? (first.classList.contains("notice") ? first.textContent : first.querySelector(".card-title")?.textContent || "") : "";
   setDisplayedProperty($("#banners-summary"), "textContent", text + (shown.length > 1 ? ` (+${shown.length - 1} more)` : ""));
 }
+let speechStartingSince = null, speechRetryPending = false;
 function setStatus(st) {
-  const s = st.last_error && st.state !== "recording" && !st.busy ? "error" : st.state === "recording" ? "recording" : st.busy || (st.state === "loading" ? "loading" : "idle");
+  const speech = st.speech_runtime || {};
+  const speechFailed = speech.state === "failed" || (st.state === "loading" && !!st.last_error);
+  const previewRecovery = speech.reason === "preview_recovery_pending";
+  const speechStarting = !speechFailed && (st.state === "loading" || speech.state === "loading" ||
+    (speech.state === "switching" && !previewRecovery && speech.reason !== "idle_unloaded"));
+  const now = Date.now();
+  speechStartingSince = speechStarting ? speechStartingSince ?? now : null;
+  const speechSlow = speechStarting && now - speechStartingSince >= 15000;
+  const s = st.state === "recording" ? "recording" : st.busy || (speechFailed || st.last_error ? "error" : speechStarting ? "loading" : "idle");
   const recordingStarting = s === "recording" && st.recording_ready === false;
   const stoppingPreview=st.state!=="recording"&&st.preview_busy&&!st.busy;
-  const cls = stoppingPreview ? "busy" : s === "recording" ? recordingStarting ? "busy" : "recording" : s === "idle" ? "idle" : s === "error" ? "error" : s === "loading" ? "" : "busy";
+  const cls = stoppingPreview || previewRecovery && s === "idle" ? "busy" : s === "recording" ? recordingStarting ? "busy" : "recording" : s === "idle" ? "idle" : s === "error" ? "error" : "busy";
   const recordingLabel = st.recording_ready == null ? "recording" : st.recording_ready ? "listening" : "starting…";
-  const label = stoppingPreview ? st.pending_dictations>0 ? "finishing dictation…" : "stopping preview…" : s === "recording" ? recordingLabel + (st.locked ? " · hands-free" : "") : s === "loading" ? (st.last_error ? "failed to start" : "loading…") : s;
+  const label = stoppingPreview ? st.pending_dictations>0 ? "finishing dictation…" : "stopping preview…" : s === "recording" ? recordingLabel + (st.locked ? " · hands-free" : "") : s === "loading" ? speechSlow ? "Taking longer" : "Starting speech" : s === "error" ? speechFailed ? "Speech unavailable" : "Error" : s === "idle" && previewRecovery ? "Speech needs attention" : s;
   const keyName = hotkeyLabel(settings.hotkey);
   setDisplayedProperty($("#dictate-heading"), "textContent", s === "recording" ? recordingStarting ? "Starting…" : "Listening" : s === "loading" ? "Getting ready…" : s === "error" ? "Needs your attention" : st.busy || stoppingPreview ? "Finishing your words…" : "Ready when you are");
-  setDisplayedProperty($("#dictate-instruction"), "textContent", s === "recording" ? recordingStarting ? "Opening your microphone. Wait for the ready cue." : st.locked ? `Press ${keyName} or choose Finish recording. Esc cancels.` : "Release the hotkey to finish. Esc cancels." : s === "loading" ? "Loading speech. Your saved words remain available." : `Press ${keyName} to start. Press it again to finish.`);
+  setDisplayedProperty($("#dictate-instruction"), "textContent", s === "recording" ? recordingStarting ? "Opening your microphone. Wait for the ready cue." : st.locked ? `Press ${keyName} or choose Finish recording. Esc cancels.` : "Release the hotkey to finish. Esc cancels." : s === "loading" ? "Wait for speech to be ready." : s === "error" ? st.last_error || "Check the speech status above." : `Press ${keyName} to start. Press it again to finish.`);
   for (const el of $$(".status")) {
     setDisplayedProperty($(".dot", el), "className", "dot " + cls);
     setDisplayedProperty($(".status-text", el), "textContent", label + (settings.cleanup && !st.llm_ok && s === "idle" ? st.cleanup_warming ? " · AI clean-up loading…" : " · AI clean-up offline" : ""));
   }
   const announcement=$("#recording-announcement");if(announcement.textContent!==label)announcement.textContent=label;
-  setDisplayedProperty($("#rail-status .dot"), "className", "dot " + cls);
-  const processingMode = $("#rail-processing")?.textContent;
-  setDisplayedProperty($("#rail-status"), "title", processingMode ? `${label} · ${processingMode}` : label);
   document.body.classList.toggle("recording", s === "recording");
   document.body.classList.toggle("recording-starting", recordingStarting);
   setDisplayedProperty($("#btn-finish"), "disabled", s!=="recording");
   setDisplayedProperty($("#btn-cancel"), "disabled", s!=="recording");
   $("#btn-finish").classList.toggle("primary", s==="recording");
-  const speech=st.speech_runtime||{}, speechNotice=$("#speech-runtime-status");
-  const speechMessage=speech.reason==="preview_recovery_pending" ? "Live preview paused. Speech will recover when you finish recording, or choose Retry startup when idle." : speech.state==="failed" ? "Speech is unavailable. Finish or cancel any recording, then choose Retry startup." : speech.state==="switching" ? (speech.device==="cpu" ? "Switching speech to your computer's processor. Please wait." : "Loading local speech. You can keep using the window.") : speech.fallback ? "Speech is using your computer's processor because GPU acceleration is unavailable. Your selected speech model is unchanged; dictation may take longer." : "";
+  const speechNotice=$("#speech-runtime-status"), speechBanner=$("#speech-notice");
+  const retryAllowed = st.speech_retry_ready ?? (st.state === "loading" && !!st.last_error);
+  const speechMessage=previewRecovery ? "Live preview paused. Speech will recover when you finish recording, or choose Retry startup when idle."
+    : speechFailed ? retryAllowed ? "Speech couldn’t start. Try starting it again." : "Speech is unavailable. Wait for current work to finish before trying again."
+    : speechSlow ? "Speech is taking longer to start. Listen is still waiting for it."
+    : speechStarting ? speech.device === "cpu" && speech.fallback ? "Switching speech to your computer's processor. Please wait." : "Loading local speech. You can keep using the window."
+    : speech.fallback ? "Speech is using your computer's processor because GPU acceleration is unavailable. Your selected speech model is unchanged; dictation may take longer." : "";
+  speechBanner.classList.toggle("hidden", !speechMessage);
+  speechBanner.classList.toggle("warning", speechSlow || previewRecovery);
+  speechBanner.classList.toggle("error", speechFailed);
   speechNotice.classList.toggle("hidden",!speechMessage);
   if(speechNotice.textContent!==speechMessage)speechNotice.textContent=speechMessage;
-  $("#btn-retry").classList.toggle("hidden",!((st.state==="loading"&&st.last_error)||speech.state==="failed"||speech.reason==="preview_recovery_pending"));
-  setDisplayedProperty($("#btn-retry"), "disabled", !(st.speech_retry_ready??(st.state==="loading"&&!!st.last_error)));
+  $("#btn-retry").classList.toggle("hidden", !(speechFailed || previewRecovery));
+  setDisplayedProperty($("#btn-retry"), "disabled", !retryAllowed || speechRetryPending);
   const speechDiagnostic=$("#diag-speech");
   if(speechDiagnostic&&st.speech_summary&&speechDiagnostic.textContent!==st.speech_summary)speechDiagnostic.textContent=st.speech_summary;
   const speechSelect=$("#speech-model"), speechStatus=$("#speech-model-status");
@@ -1852,14 +1880,15 @@ $("#discard-clipboard").onclick=async()=> {
 };
 async function poll() {
   pollRunning=true;
+  const slowConnection = watchConnection();
   const statePreviewEpoch=previewUiEpoch;
   let controllerAttempt;
   try {
     const bridge = api();
     if (typeof bridge.begin_controller_hotkey_capture === "function") controllerAttempt = controllerHotkeyAttempt;
-    S = await bridge.get_state(); bridgeLost=false;connection("");
+    S = await bridge.get_state(); bridgeLost=false;
   } catch (e) {
-    bridgeLost=true;connection("Desktop connection lost. Your input remains here. Reconnect the app before continuing; no action will retry automatically.");
+    bridgeLost=true;
   }
   if (!bridgeLost) try {
     if (controllerAttempt) receiveControllerHotkey(controllerAttempt, S.controller_hotkey_capture);
@@ -1875,18 +1904,55 @@ async function poll() {
     if (S.event === "sent") toast("Text sent");
     if (S.last_error && S.last_error !== lastErr) { lastErr = S.last_error; toast(S.last_error, true); }
   } catch (e) { toast("Could not refresh part of the screen. Your input is preserved.", true); }
-  pollRunning=false; pollTimer=setTimeout(poll, pollDelay());
+  clearTimeout(slowConnection);
+  if (bridgeLost) connection("Desktop connection lost. Check again to see whether Listen is responding.", checkConnection);
+  else connection("");
+  pollRunning=false; pollTimer=setTimeout(poll, bridgeLost ? 1000 : pollDelay());
 }
 let lastDeliveryAt=0, pollTimer=0, pollRunning=false;
 const pollDelay = () => document.hidden ? 1000 : document.body.classList.contains("recording") ? 33 : 250;
+function watchConnection() {
+  return setTimeout(() => connection("Listen is taking longer to respond. If it stays here, quit from the tray and reopen Listen after any recording finishes."), 5000);
+}
+function checkConnection() {
+  connection("Checking desktop connection…");
+  if (pollRunning) return;
+  clearTimeout(pollTimer);
+  if (booted) poll();
+  else {
+    bridgeReady ||= !!window.pywebview?.api;
+    boot();
+  }
+}
 
 // ---------- boot ----------
-for(const [id,method] of [["finish","finish_recording"],["cancel","cancel_recording"],["retry","retry_startup"]]) $("#btn-"+id).onclick=async()=> {const endsPreview=id!=="retry";if(endsPreview){previewActionPending++;invalidatePreview();}try{if(!await api()[method]())toast("Action unavailable. Check status and try again.",true);}catch{connection("Desktop connection lost. Your text is preserved.");}finally{if(endsPreview){previewActionPending--;invalidatePreview();}}};
+for(const [id,method] of [["finish","finish_recording"],["cancel","cancel_recording"]]) $("#btn-"+id).onclick=async()=> {previewActionPending++;invalidatePreview();try{if(!await api()[method]())toast("Action unavailable. Check status and try again.",true);}catch{connection("Desktop connection lost. Your text is preserved.");}finally{previewActionPending--;invalidatePreview();}};
+$("#btn-retry").onclick = async () => {
+  if (speechRetryPending) return;
+  speechRetryPending = true;
+  $("#btn-retry").disabled = true;
+  try {
+    if (!await api().retry_startup()) toast("Speech can’t retry yet. Check the status and try again.", true);
+  } catch { connection("Desktop connection lost. Check again to see whether Listen is responding.", checkConnection); }
+  finally { speechRetryPending = false; }
+};
+let initialConnectionTimer;
 async function boot() {
   if(booted)return;booted=true;
+  clearTimeout(initialConnectionTimer);
+  const slowConnection = watchConnection();
   $("#demo-banner").classList.toggle("hidden",!demo);
-  try{settings=await api().get_settings();options=await api().get_options();vocab.value=settings.vocab||"";renderChips();await loadLab();await loadRecent();show("dictate",false);poll();}
-  catch{booted=false;connection("Could not connect to the desktop app. Your input is preserved. Reopen the app to reconnect.");}
+  const version = vocabVersion;
+  try {
+    settings = await api().get_settings();
+    options = await api().get_options();
+    if (!vocabDirty && vocabVersion === version) vocab.value = settings.vocab || "";
+    renderChips();
+    if (!$('.page.active')) show(page, false);
+    poll();
+  }
+  catch{booted=false;connection("Could not connect to the desktop app. Check again to reconnect.", checkConnection);}
+  finally { clearTimeout(slowConnection); }
 }
 // Hidden windows poll slowly; coming back restores the normal rate at once (unless a poll is already running).
 document.addEventListener("visibilitychange",()=> { if(!document.hidden&&pollTimer&&!pollRunning) { clearTimeout(pollTimer); poll(); } });
@@ -1917,5 +1983,8 @@ $("#lab-models").addEventListener("toggle", async event => {
   } catch { if (page === "lab") rememberPromptModels({models:[],available:false}); }
 });
 window.addEventListener("pywebviewready",()=>{bridgeReady=true;boot();},{once:true});
-if(demo || bridgeReady)boot();else connection("Connecting to desktop app…");
+if(demo || bridgeReady)boot();else {
+  connection("Connecting to desktop app…");
+  initialConnectionTimer = setTimeout(() => connection("Still waiting for the Listen desktop app.", checkConnection), 5000);
+}
 })();

@@ -2659,7 +2659,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261120-listen19-controller-hotkeys"
+UI_VERSION = "20261120-listen19-dictate-status"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False

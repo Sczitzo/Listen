@@ -38,14 +38,13 @@ const recordingFirst=writes;for(let i=0;i<100;i++)render(record,[.1,.2]);const r
 const heights=get('#bars-dictate').children.map(e=>e.style.height);assert.equal(heights.at(-1),'26px');
 render(record,[.2,.01]);assert.notEqual(get('#bars-dictate').children.at(-1).style.height,heights.at(-1));
 render({...idle,state:'recording',locked:false});assert.equal(statuses[1].label.textContent,'recording');assert(context.document.body.classList.contains('recording'));
-render({...idle,busy:'engineering'});assert.equal(statuses[1].label.textContent,'engineering');assert.equal(get('#rail-status').title,'engineering');
-render({...idle,state:'loading'});assert.equal(statuses[0].label.textContent,'loading…');
+render({...idle,busy:'engineering'});assert.equal(statuses[1].label.textContent,'engineering');
+render({...idle,state:'loading'});assert.equal(statuses[0].label.textContent,'Starting speech');
 render({...idle,preview_busy:true,pending_dictations:0});assert.equal(statuses[0].label.textContent,'stopping preview…');
 render({...idle,preview_busy:true,pending_dictations:1});assert.equal(statuses[0].label.textContent,'finishing dictation…');assert.equal(statuses[0].dot.className,'dot busy');
-render({...idle,last_error:'failed'});assert.equal(statuses[0].label.textContent,'error');assert.equal(statuses[0].dot.className,'dot error');
+render({...idle,last_error:'failed'});assert.equal(statuses[0].label.textContent,'Error');assert.equal(statuses[0].dot.className,'dot error');
 render({...idle,state:'loading',last_error:'failed',speech_runtime:{state:'failed'},speech_retry_ready:true});
-// Preserve the existing error precedence; this pass does not change status wording.
-assert.equal(statuses[0].label.textContent,'error');assert.equal(get('#btn-retry').disabled,false);assert.equal(get('#btn-retry').classList.contains('hidden'),false);
+assert.equal(statuses[0].label.textContent,'Speech unavailable');assert.equal(get('#btn-retry').disabled,false);assert.equal(get('#btn-retry').classList.contains('hidden'),false);
 render({...idle,speech_runtime:{state:'ready',device:'cpu',fallback:true},speech_summary:'Whisper Small CPU'});
 assert.match(get('#speech-runtime-status').textContent,/processor/);assert.equal(get('#diag-speech').textContent,'Whisper Small CPU');
 render({...idle,llm_ok:false});assert.match(statuses[0].label.textContent,/offline/);

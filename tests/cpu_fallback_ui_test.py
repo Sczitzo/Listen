@@ -18,9 +18,27 @@ function element(){let value='',writes=0;const classes=new Set();return {
 };}
 const status=element();status.children={'.dot':element(),'.status-text':element()};
 function $(selector,parent){return parent?parent.children[selector]:(controls[selector]??=element())}
-const context=vm.createContext({$, $$:selector=>selector==='.status'?[status]:[],settings:{cleanup:true,hotkey:'ctrl_r'},options:{hotkey:{'Right Ctrl':'ctrl_r'}},document:{body:element()}});
-vm.runInContext(source.slice(source.indexOf('function hotkeyLabel('),source.indexOf('function chip('))+source.slice(source.indexOf('// ---------- polling ----------'),source.indexOf('let lastErr =')),context);
+let now=1000;
+const context=vm.createContext({$, $$:selector=>selector==='.status'?[status]:[],settings:{cleanup:true,hotkey:'ctrl_r'},options:{hotkey:{'Right Ctrl':'ctrl_r'}},speechModelSavePending:false,modelSavePending:false,document:{body:element()},Date:{now:()=>now},esc:String});
+vm.runInContext(source.slice(source.indexOf('function hotkeyLabel('),source.indexOf('function chip(')),context);
+vm.runInContext(source.slice(source.indexOf('// ---------- polling ----------'),source.indexOf('let lastErr =')),context);
 function render(runtime,extra={}){context.st={state:'idle',busy:'',locked:false,last_error:'',llm_ok:true,speech_runtime:runtime,speech_retry_ready:false,...extra};vm.runInContext('setStatus(st)',context);}
+assert(!html.includes('id="rail-status"'),'The navigation duplicated the Dictate indicator');
+for(const [direction,glyph] of [['Left','←'],['Right','→'],['Up','↑'],['Down','↓']]) {
+ context.keycap=element();context.label=`Ctrl + ${direction} Arrow`;
+ vm.runInContext('renderHotkeyKeycaps(keycap,label)',context);
+ assert(context.keycap.innerHTML.includes(`aria-hidden="true">${glyph}</span><span class="sr-only">${direction} Arrow`));
+}
+const startup={state:'loading'};
+render(startup);
+assert.equal(status.children['.dot'].className,'dot busy');
+assert.match($('#dictate-heading').textContent,/Getting ready/);
+now+=15000;
+render(startup);
+assert.match($('#speech-runtime-status').textContent,/taking longer/);
+assert($('#btn-retry').classList.contains('hidden'),'A still-running startup must not offer a second one');
+render({state:'switching',reason:'idle_unloaded'});
+assert($('#speech-runtime-status').classList.contains('hidden'),'Idle sleep is not loading');
 render({state:'ready',device:'cuda',fallback:false});
 assert($('#speech-runtime-status').classList.contains('hidden'));
 assert($('#btn-retry').classList.contains('hidden')&&$('#btn-retry').disabled);
