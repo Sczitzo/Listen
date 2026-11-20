@@ -282,7 +282,8 @@ await run('history caps at 200 rows, Show more, 200 ms debounce, index lookup',a
  const entries=Array.from({length:450},(_,i)=>({ts:'2026-09-12T10:12:00',kind:'dictate',text:'entry '+i,raw:'raw '+i,cost:0,delivery_status:i===4?'legacy':'sent'}));
  let confirmed=false, prompts=0;
  const btn=el();btn.dataset.historyCopy='clean';btn.closest=()=>({dataset:{i:'3'}});
- const c=vm.createContext({console,esc:x=>String(x),$:s=>s==='#hist-more'?(R('#hist-list').innerHTML.includes('id="hist-more"')?R(s):null):s==='#clear-filter'?null:R(s),
+ R('.main').addEventListener=()=>{};
+ const c=vm.createContext({console,document:{activeElement:null},esc:x=>String(x),$:s=>s==='#hist-more'?(R('#hist-list').innerHTML.includes('id="hist-more"')?R(s):null):s==='#clear-filter'?null:R(s),
   $$:(s)=>s==='[data-history-copy]'?[btn]:[],toast(){},askConfirm:async()=>{prompts++;return confirmed;},page:'history',window:{matchMedia:()=>({matches:false})},
   api:()=>({get_history:async()=>entries,get_stats:async()=>({today:1,week:1,words_week:1,minutes_week:1,wpm:1,latency:1,spend_month:0}),copy_text:async t=>{copied.push(t);return true;}}),
   setTimeout:(fn,ms)=>{timers.set(++n,{fn,ms});return n;},clearTimeout:id=>timers.delete(id)});
@@ -300,6 +301,9 @@ await run('history caps at 200 rows, Show more, 200 ms debounce, index lookup',a
  assert(!R('#stats').innerHTML.includes('metric-strip'),'reduced motion created a roll');
  const rows=()=>(R('#hist-list').innerHTML.match(/<li (?!class="empty")/g)||[]).length;
  assert.equal(rows(),200,'history rendered '+rows()+' rows');
+ assert(R('#hist-list').innerHTML.includes('<details class="history-group"'),'date groups missing');
+ assert(R('#hist-list').innerHTML.includes('App not recorded'),'legacy destination should be labeled');
+ assert(R('#history-jump-list').innerHTML.includes('aria-current="location"'),'initial date is not selected');
  assert(R('#hist-list').innerHTML.includes('Show more'));
  assert(!/data-text=|data-raw=/.test(R('#hist-list').innerHTML),'rows still carry text copies');
  await btn.onclick();assert.equal(copied.at(-1),'entry 3','copy did not look up the entry by index');

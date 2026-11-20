@@ -1,11 +1,15 @@
 """Non-destructive readers and atomic replacement for local application data."""
+import base64
 import copy
 import datetime
 import hashlib
+import io
 import json
 import math
 import os
 import tempfile
+
+from PIL import Image
 
 from dictation_quality import CRITERIA
 
@@ -63,7 +67,26 @@ def load_json(path, default):
     return copy.deepcopy(default)
 
 
-def read_history(path, limit=500):
+def _history_app(value):
+    name = value.get('name') if isinstance(value, dict) else None
+    if (not isinstance(name, str) or not name or len(name) > 80
+            or name != name.strip() or not name.isprintable() or any(c in name for c in '/\\:')):
+        return None
+    app = {'name': name}
+    icon = value.get('icon')
+    if isinstance(icon, str) and 0 < len(icon) <= 4608:
+        try:
+            data = base64.b64decode(icon, validate=True)
+            if data.startswith(b'\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x20\x00\x00\x00\x20'):
+                with Image.open(io.BytesIO(data), formats=['PNG']) as image:
+                    image.verify()
+                app['icon'] = icon
+        except Exception:
+            pass
+    return app
+
+
+def read_history(path, limit=500, *, include_app=True):
     rows, skipped = [], 0
     try:
         with open(path, 'rb') as stream:
@@ -81,12 +104,20 @@ def read_history(path, limit=500):
                     for key in ('secs', 'latency', 'cost'):
                         if not _number(row.get(key)):
                             row[key] = 0
+                    if not include_app:
+                        row.pop('app', None)
                     rows.append(row)
                 except (ValueError, UnicodeError, TypeError, OverflowError):
                     skipped += 1
     except OSError:
         pass
-    return rows[-max(0, limit):] if limit > 0 else [], skipped
+    rows = rows[-limit:] if limit > 0 else []
+    if include_app:
+        for row in rows:
+            app = _history_app(row.pop('app', None))
+            if app:
+                row['app'] = app
+    return rows, skipped
 
 
 def valid_setting(key, value):

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Listen</title>
-  <link rel="stylesheet" href="app.css?v=20261120-listen19-dictate-status">
+  <link rel="stylesheet" href="app.css?v=20261120-listen19-history-timeline">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -181,8 +181,19 @@
     <section class="page" data-page="history">
       <h1 class="sr-only" tabindex="-1">History</h1>
       <div class="stats" id="stats"></div>
-      <div class="search"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="hist-search">Filter history</label><input id="hist-search" class="input" placeholder="Filter history" autocomplete="off"></div>
-      <div class="card grow"><ul class="list" id="hist-list"></ul></div>
+      <div class="history-tools">
+        <div class="search"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="hist-search">Find words or an app</label><input id="hist-search" class="input" type="search" placeholder="Find words or an app" autocomplete="off"></div>
+        <div class="history-grouping" role="group" aria-label="Group history">
+          <span aria-hidden="true">Group by</span><div class="history-group-options"><button type="button" data-history-mode="day" aria-pressed="true">Day</button><button type="button" data-history-mode="app" aria-pressed="false">App</button></div>
+        </div>
+      </div>
+      <div class="history-timeline">
+        <nav class="history-jump" id="history-jump" aria-label="Jump to a date" hidden>
+          <strong>Jump to</strong><div id="history-jump-list"></div>
+        </nav>
+        <div id="hist-list"></div>
+      </div>
+      <p class="sr-only" id="history-matches" role="status"></p>
       <div class="actions"><span class="muted">Copy cleaned text or the original transcript using the buttons.</span><span class="spacer"></span><button class="btn ghost" id="btn-clear-history"><svg class="ico" aria-hidden="true"><use href="#i-trash"/></svg>Clear history</button></div>
     </section>
 
@@ -303,6 +314,6 @@
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 </div>
 <script src="model-benchmarks.js?v=20261119-listen19"></script>
-<script src="app.js?v=20261120-listen19-dictate-status"></script>
+<script src="app.js?v=20261120-listen19-history-timeline"></script>
 </body>
 </html>

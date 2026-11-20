@@ -65,6 +65,7 @@ from speech_process import SpeechProcessRuntime
 from transcript_preview import FINAL_NOTICE_SECONDS, TranscriptPreview, audio_interval
 from draft_preview import DraftCoordinator, DraftJob
 from preview_card import PreviewCard, work_area
+from target_icon import history_app
 import paste_windows as clipboard_delivery
 import text_input_windows as text_delivery
 from dataclasses import replace as replace_target
@@ -2009,10 +2010,17 @@ def _process_recording(chunks, held, released, target=None, generations=None):
     timings['finish_to_entry_attempt_ms'] = round(1000 * max(0, time.perf_counter() - released), 3)
     latency = max(0, round(time.perf_counter() - released, 1))
     print(f"[delivery] status={delivery.get('status', 'unknown') if isinstance(delivery, dict) else 'unknown'} elapsed={latency}s")
+    row = {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "kind": mode,
+           "raw": raw, "text": text, "secs": round(held, 1), "latency": latency, "cost": cost, "by": by,
+           "delivery_status": delivery.get("status", "unknown") if isinstance(delivery, dict) else "unknown"}
     try:
-        _append_history({"ts": datetime.datetime.now().isoformat(timespec="seconds"), "kind": mode,
-                         "raw": raw, "text": text, "secs": round(held, 1), "latency": max(0, latency), "cost": cost, "by": by,
-                         "delivery_status": delivery.get("status", "unknown") if isinstance(delivery, dict) else "unknown"})
+        app = history_app(getattr(target, 'hwnd', None), getattr(target, 'pid', None))
+        if app:
+            row['app'] = app
+    except Exception:
+        pass  # Optional app details must never prevent history from saving.
+    try:
+        _append_history(row)
     except OSError as e:
         # The text was already delivered; do not report a failed dictation.
         _last_error = "Text delivered, but history could not be saved (" + type(e).__name__ + ")."
@@ -2659,7 +2667,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261120-listen19-dictate-status"
+UI_VERSION = "20261120-listen19-history-timeline"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -3064,7 +3072,7 @@ class Api(ExperienceApi):
 
     def get_stats(self):
         with _data_lock:
-            rows, _ = read_history(HISTORY, limit=sys.maxsize)
+            rows, _ = read_history(HISTORY, limit=sys.maxsize, include_app=False)
         ensure_experience(sys.modules[__name__])
         now = datetime.datetime.now()
         day, week, month = now.strftime("%Y-%m-%d"), (now - datetime.timedelta(days=7)).isoformat(), now.strftime("%Y-%m")

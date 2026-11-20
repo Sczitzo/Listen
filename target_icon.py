@@ -1,6 +1,9 @@
 """Read the Windows icon of a captured dictation destination."""
+import base64
 import ctypes
 from ctypes import wintypes
+import io
+import ntpath
 
 from PIL import Image, ImageColor
 
@@ -9,6 +12,53 @@ def _api(dll, name, result, *arguments):
     function = getattr(dll, name)
     function.argtypes, function.restype = arguments, result
     return function
+
+
+def history_app(hwnd, pid):
+    if not hwnd or not pid:
+        return None
+    kernel = ctypes.WinDLL('kernel32')
+    user = ctypes.WinDLL('user32')
+    owner = _api(user, 'GetWindowThreadProcessId', wintypes.DWORD, wintypes.HWND,
+                 ctypes.POINTER(wintypes.DWORD))
+    process = wintypes.DWORD()
+    if not owner(hwnd, ctypes.byref(process)) or process.value != pid:
+        return None
+
+    open_process = _api(kernel, 'OpenProcess', wintypes.HANDLE,
+                        wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    close = _api(kernel, 'CloseHandle', wintypes.BOOL, wintypes.HANDLE)
+    query = _api(kernel, 'QueryFullProcessImageNameW', wintypes.BOOL, wintypes.HANDLE,
+                 wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    handle = open_process(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        path = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(path))
+        if not query(handle, 0, path, ctypes.byref(length)):
+            return None
+        name = ntpath.splitext(ntpath.basename(path.value))[0].strip()
+        if not name or len(name) > 80 or not name.isprintable():
+            return None
+        labels = {'code': 'VS Code', 'notepad': 'Notepad', 'explorer': 'File Explorer',
+                  'chrome': 'Google Chrome', 'msedge': 'Microsoft Edge', 'firefox': 'Firefox'}
+        app = {'name': labels.get(name.casefold(), name)}
+        try:
+            icon = window_icon(hwnd, pid, 32, '#2d2925')
+            if icon is not None:
+                with icon, io.BytesIO() as output:
+                    icon.save(output, format='PNG')
+                    encoded = base64.b64encode(output.getvalue()).decode('ascii')
+                if len(encoded) <= 4608:
+                    app['icon'] = encoded
+        except (OSError, ValueError):
+            pass
+        if owner(hwnd, ctypes.byref(process)) and process.value == pid:
+            return app
+        return None
+    finally:
+        close(handle)
 
 
 def window_icon(hwnd, pid, size, background):

@@ -946,14 +946,14 @@ async function loadSuggestions() {
 // ---------- history & stats ----------
 function fmtTs(ts) { const d = new Date(ts); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }); }
 function wordLabel(n) { return n + (n === 1 ? " word" : " words"); }  // spelled out: a bare "w" reads as weeks
-function historyInboxRow(e, i) {
+function historyInboxRow(e, i, app = "", time = fmtTs(e.ts)) {
   const uncertain = e.delivery_status === "uncertain" || e.delivery_status === "pasted";
   const retained = e.delivery_status === "retained";
   const unknown = deliveryNeedsCheck(e) && !uncertain;
   const delivery = uncertain ? "Paste not confirmed" : retained ? "Not sent" : e.delivery_status === "copied" ? "Copied for manual paste" : unknown ? "Paste status unknown" : "Text sent · arrival not checked";
   const next = uncertain || unknown ? "Check the original app first. The text may already be there. Copy again only if it is missing." : retained ? "This text was saved instead of being sent. Copy it into the app where you want it." : e.delivery_status === "copied" ? "Paste into your intended app when you are ready." : "Saved here if you need to read or reuse it.";
   const label = uncertain || unknown ? "Copy after checking" : retained ? "Copy saved text" : "Copy text";
-  return `<li class="history-entry${uncertain || unknown ? " needs-attention" : ""}" data-i="${i}" data-delivery="${esc(e.delivery_status)}"><div class="history-meta"><time>${fmtTs(e.ts)}</time><span>${e.kind==="engineer"?"Engineered prompt":e.kind==="prompt"?"Prompt":"Dictation"}</span><span class="history-saved">Text saved</span>${e.by?`<span>${esc(e.by)}</span>`:""}<span class="history-count">${wordLabel(e.text.trim().split(/\s+/).filter(Boolean).length)}${e.cost?` · $${e.cost<.01?e.cost.toFixed(4):e.cost.toFixed(2)}`:""}</span></div><p class="history-text">${esc(e.text)}</p><div class="history-delivery"><strong>${delivery}</strong><span>${next}</span></div><div class="history-actions"><button class="btn sm" data-history-copy="clean">${label}</button>${e.raw?'<button class="btn sm quiet" data-history-copy="raw">Copy original</button>':""}${uncertain?'<button class="link" data-review-paste>Clipboard recovery</button>':""}</div></li>`;
+  return `<li class="history-entry${uncertain || unknown ? " needs-attention" : ""}" data-i="${i}" data-delivery="${esc(e.delivery_status)}"><div class="history-meta">${app}<time datetime="${esc(e.ts)}">${esc(time)}</time><span>${e.kind==="engineer"?"Engineered prompt":e.kind==="prompt"?"Prompt":"Dictation"}</span><span class="history-saved">Text saved</span>${e.by?`<span>${esc(e.by)}</span>`:""}<span class="history-count">${wordLabel(e.text.trim().split(/\s+/).filter(Boolean).length)}${e.cost?` · $${e.cost<.01?e.cost.toFixed(4):e.cost.toFixed(2)}`:""}</span></div><p class="history-text">${esc(e.text)}</p><div class="history-delivery"><strong>${delivery}</strong><span>${next}</span></div><div class="history-actions"><button class="btn sm" data-history-copy="clean">${label}</button>${e.raw?'<button class="btn sm quiet" data-history-copy="raw">Copy original</button>':""}${uncertain?'<button class="link" data-review-paste>Clipboard recovery</button>':""}</div></li>`;
 }
 function histRow(e, i) {
   const outcome = { uncertain: "Check original app before copying again", retained: "Not sent - recover in Listen", copied: "Copied - paste manually", sent: "Text sent; arrival not checked", pasted: "Paste attempted; check original app", unknown: "Delivery status unavailable" }[e.delivery_status] || "";
@@ -994,14 +994,145 @@ async function showPasteRecovery() {
 
 const HIST_PAGE = 200;
 let histAll = [], histShown = [], recentShown = [], histLimit = HIST_PAGE, histTimer;
+let historyMode = "day", historyCurrent, historyJumpTop, historyScrollFrame;
+const historyCollapsed = new Set();
+const historyDayLabel = new Intl.DateTimeFormat(undefined, {weekday:"long", month:"long", day:"numeric", year:"numeric"});
+const historyShortDay = new Intl.DateTimeFormat(undefined, {month:"short", day:"numeric"});
+const historyShortOldDay = new Intl.DateTimeFormat(undefined, {month:"short", day:"numeric", year:"2-digit"});
+const historyTime = new Intl.DateTimeFormat(undefined, {hour:"2-digit", minute:"2-digit"});
+
+function historyAppName(app) {
+  return typeof app?.name === "string" && app.name.trim() && app.name.length <= 80 ? app.name : "";
+}
+function historyAppMark(app) {
+  const name = historyAppName(app);
+  if (!name) return '<span class="history-app unknown">App not recorded</span>';
+  const icon = app.icon;
+  const mark = typeof icon === "string" && icon.length <= 4608 && /^iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/.test(icon)
+    ? `<img src="data:image/png;base64,${icon}" alt="" width="22" height="22">`
+    : `<span class="history-app-mark" aria-hidden="true">${esc(Array.from(name)[0].toUpperCase())}</span>`;
+  return `<span class="history-app">${mark}${esc(name)}</span>`;
+}
+function historyGroups(rows, byApp) {
+  const groups = new Map();
+  const year = new Date().getFullYear();
+  for (const row of rows) {
+    const date = new Date(row.ts), dated = Number.isFinite(date.getTime()), app = historyAppName(row.app);
+    const key = byApp ? "app:" + app.toLowerCase() : dated ? `day:${date.getFullYear()}-${date.getMonth()}-${date.getDate()}` : "day:unknown";
+    let group = groups.get(key);
+    if (!group) {
+      const label = byApp ? app || "App not recorded" : dated ? historyDayLabel.format(date) : "Date unavailable";
+      const short = byApp || !dated ? label : (date.getFullYear() === year ? historyShortDay : historyShortOldDay).format(date);
+      group = {key, label, short, app:row.app, entries:[]};
+      groups.set(key, group);
+    }
+    group.entries.push(row);
+    if (!group.app?.icon && row.app?.icon) group.app = row.app;
+  }
+  const ordered = [...groups.values()];
+  if (byApp && groups.has("app:")) ordered.push(...ordered.splice(ordered.indexOf(groups.get("app:")), 1));
+  return ordered;
+}
+function selectHistoryGroup(index) {
+  const next = $(`#history-jump-list [data-jump="${index}"]`);
+  if (!next || next.getAttribute("aria-current") === "location") return;
+  $("#history-jump-list [aria-current]")?.removeAttribute("aria-current");
+  next.setAttribute("aria-current", "location");
+  historyCurrent = next.dataset.historyKey;
+  const rail = next.parentElement, item = next.getBoundingClientRect(), visible = rail.getBoundingClientRect();
+  if (item.top < visible.top) rail.scrollTop -= visible.top - item.top;
+  else if (item.bottom > visible.bottom) rail.scrollTop += item.bottom - visible.bottom;
+}
 function renderHistory() {
   const q = $("#hist-search").value.trim().toLowerCase();
-  const rows = histAll.filter(e => !q || e.text.toLowerCase().includes(q) || (e.raw || "").toLowerCase().includes(q));
-  histShown = rows.slice(0, histLimit);
-  $("#hist-list").innerHTML = rows.length ? histShown.map(historyInboxRow).join("") + (rows.length > histLimit ? `<li class="empty"><button class="link" id="hist-more">Show more (${rows.length - histLimit} more)</button></li>` : "") : q ? '<li class="empty">No matching dictations. <button class="link" id="clear-filter">Clear filter</button></li>' : '<li class="empty">Your dictations will appear here after you record.</li>';
-  bindRows($("#hist-list"), histShown); if($("#clear-filter")) $("#clear-filter").onclick=()=> { $("#hist-search").value=""; histLimit=HIST_PAGE; renderHistory(); };
-  if($("#hist-more")) $("#hist-more").onclick=()=> { histLimit+=HIST_PAGE; renderHistory(); $("#hist-more")?.focus(); };
+  const rows = histAll.filter(e => !q || [e.text, e.raw || "", historyAppName(e.app) || "App not recorded"].some(value => value.toLowerCase().includes(q)));
+  const byApp = historyMode === "app", groups = historyGroups(rows, byApp);
+  const list = $("#hist-list"), rail = $("#history-jump"), jumps = $("#history-jump-list");
+  const focused = document.activeElement;
+  const focusedJump = focused?.closest("#history-jump-list a")?.dataset.historyKey;
+  const focusedGroup = focused?.closest(".history-group");
+  const focusedEntry = focused?.closest(".history-entry");
+  const previousEntry = focusedEntry && histShown[+focusedEntry.dataset.i];
+  let rendered = "", start = 0;
+  histShown = [];
+  for (const [index, group] of groups.entries()) {
+    group.start = start;
+    start += group.entries.length;
+    if (group.start >= histLimit) continue;
+    const heading = byApp ? historyAppMark(group.app) : esc(group.label);
+    const entries = group.entries.slice(0, histLimit - group.start).map(entry => {
+      const date = new Date(entry.ts);
+      const time = byApp || !Number.isFinite(date.getTime()) ? fmtTs(entry.ts) : historyTime.format(date);
+      return historyInboxRow(entry, histShown.push(entry) - 1, byApp ? "" : historyAppMark(entry.app), time);
+    });
+    rendered += `<details class="history-group" id="history-group-${index}" data-history-key="${esc(group.key)}"${historyCollapsed.has(group.key) ? "" : " open"}><summary>${heading}<small>${group.entries.length} ${group.entries.length === 1 ? "entry" : "entries"}</small></summary><ul class="list history-entries">${entries.join("")}</ul></details>`;
+  }
+  if (!groups.some(group => group.start < histLimit && group.key === historyCurrent)) historyCurrent = groups[0]?.key;
+  rail.hidden = !groups.length;
+  rail.setAttribute("aria-label", byApp ? "Jump to an app" : "Jump to a date");
+  jumps.innerHTML = groups.map((group, index) => `<a href="#history-group-${index}" data-jump="${index}" data-history-key="${esc(group.key)}" aria-label="${esc(group.label)}, ${group.entries.length} ${group.entries.length === 1 ? "entry" : "entries"}"${group.key === historyCurrent ? ' aria-current="location"' : ""}><span>${esc(group.short)}</span><span>${group.entries.length}</span></a>`).join("");
+  list.innerHTML = rendered ? rendered + (rows.length > histLimit ? `<button class="btn" id="hist-more">Show more (${rows.length - histLimit} more)</button>` : "")
+    : q ? '<p class="history-empty">No matching entries. <button class="link" id="clear-filter">Clear filter</button></p>' : '<p class="history-empty">Your dictations will appear here after you record.</p>';
+  $("#history-matches").textContent = `${rows.length} ${rows.length === 1 ? "entry" : "entries"}`;
+  $$(".history-group", list).forEach(group => group.ontoggle = () => {
+    if (!group.isConnected) return;
+    if (group.open) historyCollapsed.delete(group.dataset.historyKey);
+    else historyCollapsed.add(group.dataset.historyKey);
+  });
+  $$("[data-jump]", jumps).forEach(link => link.onclick = event => {
+    event.preventDefault();
+    const index = +link.dataset.jump, group = groups[index];
+    if (group.start >= histLimit) {
+      histLimit = (Math.floor(group.start / HIST_PAGE) + 1) * HIST_PAGE;
+      renderHistory();
+    }
+    const detail = $(`#history-group-${index}`);
+    detail.open = true;
+    detail.querySelector("summary").focus({preventScroll:true});
+    detail.scrollIntoView({block:"start"});
+    historyJumpTop = $(".main").scrollTop;
+    selectHistoryGroup(index);
+  });
+  bindRows(list, histShown);
+  if($("#clear-filter")) $("#clear-filter").onclick = () => { $("#hist-search").value=""; histLimit=HIST_PAGE; renderHistory(); $("#hist-search").focus(); };
+  if($("#hist-more")) $("#hist-more").onclick = () => {
+    const next = histLimit; histLimit += HIST_PAGE; renderHistory();
+    ($("#hist-more") || $(`#hist-list [data-i="${next}"] [data-history-copy]`))?.focus();
+  };
+  if (focusedGroup) {
+    const summary = $$(".history-group", list).find(group => group.dataset.historyKey === focusedGroup.dataset.historyKey)?.querySelector("summary");
+    const index = previousEntry ? histShown.findIndex(entry => entry.ts === previousEntry.ts && entry.kind === previousEntry.kind && entry.text === previousEntry.text) : -1;
+    const action = focused.dataset.historyCopy ? `[data-history-copy="${focused.dataset.historyCopy}"]` : "[data-review-paste]";
+    ((index >= 0 && $(`#hist-list [data-i="${index}"] ${action}`)) || summary)?.focus({preventScroll:true});
+  } else if (focusedJump) $$("[data-jump]", jumps).find(link => link.dataset.historyKey === focusedJump)?.focus({preventScroll:true});
 }
+$$('[data-history-mode]').forEach(button => button.onclick = () => {
+  historyMode = button.dataset.historyMode;
+  histLimit = HIST_PAGE;
+  $$("[data-history-mode]").forEach(option => option.setAttribute("aria-pressed", String(option === button)));
+  renderHistory();
+});
+$(".main").addEventListener("scroll", () => {
+  if (page !== "history" || historyScrollFrame) return;
+  historyScrollFrame = requestAnimationFrame(() => {
+    historyScrollFrame = 0;
+    if (page !== "history") return;
+    const main = $(".main"), groups = $$("#hist-list .history-group");
+    if (!groups.length || main.scrollTop === historyJumpTop) return;
+    historyJumpTop = null;
+    if (main.scrollTop > 0 && main.scrollHeight - main.clientHeight - main.scrollTop <= 2) {
+      selectHistoryGroup(groups.length - 1);
+      return;
+    }
+    const boundary = main.getBoundingClientRect().top + 48;
+    let index = 0;
+    for (const [i, group] of groups.entries()) {
+      if (group.getBoundingClientRect().top > boundary) break;
+      index = i;
+    }
+    selectHistoryGroup(index);
+  });
+}, {passive:true});
 const historyDigits = Array.from((9876543210).toLocaleString(undefined, {useGrouping:false})).reverse();
 function historyMetric(value, animate) {
   const exact = esc(value);
