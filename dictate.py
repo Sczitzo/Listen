@@ -725,6 +725,9 @@ _hotkey_dispatch_thread = None
 _hotkey_epoch = 0
 _hotkey_action_epoch = None
 _hook_key_down = False
+_hotkey_capture = None
+_hotkey_capture_held = set()
+HOTKEY_CAPTURE_SECONDS = 30
 _CAPTURE_TARGET = object()
 _state = "loading"     # loading | idle | recording   (what the hotkey side is doing)
 _busy = ""             # "" | transcribing | cleaning | engineering | error   (what the worker is doing)
@@ -1430,6 +1433,17 @@ def _queued_event_filter(msg, data):
     down, up = msg in (0x100, 0x104), msg in (0x101, 0x105)
     at = time.perf_counter()
     epoch = _hotkey_epoch
+    capture = _hotkey_capture
+    vk = data.vkCode
+    if vk in _hotkey_capture_held or (capture and at < capture[1]):
+        # Ignore firmware repeats and the matching release after the dialog closes.
+        if up:
+            _hotkey_capture_held.discard(vk)
+            if vk == hotkey().value.vk:
+                _hook_key_down = False
+        elif down and any(vk == getattr(pk.Key, key).value.vk for key in HOTKEY_NAMES.values()):
+            _hotkey_capture_held.add(vk)
+        return False
     if data.vkCode == 0x1B:
         if down and (_escape_down or _recording.is_set() or _hook_key_down or not _hotkey_events.empty()):
             if not _escape_down:
@@ -2264,7 +2278,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261119-listen19-main-window"
+UI_VERSION = "20261119-listen19-in-place-hotkey"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -2468,6 +2482,41 @@ class Api(ExperienceApi):
                 "microphone": self.get_microphones(), "speech_model": selected,
                 "speech_models": cached_speech_models(),
                 "speech_model_label": speech_model_label(selected), "speech_model_note": speech_model_note(selected)}
+
+    def begin_hotkey_capture(self):
+        global _hotkey_capture, _hotkey_epoch
+        with _mic_lock:
+            now = time.perf_counter()
+            if (_quitting or _state != 'idle' or _recording.is_set()
+                    or _hotkey_down is not None or _hook_key_down or _escape_down
+                    or _pending_recordings or _pending_pastes or _jobs.unfinished_tasks
+                    or (_hotkey_capture and now < _hotkey_capture[1])):
+                return {'ok': False}
+            token = uuid.uuid4().hex
+            _hotkey_capture = (token, now + HOTKEY_CAPTURE_SECONDS, SETTINGS['hotkey'])
+            _hotkey_epoch += 1
+            return {'ok': True, 'token': token, 'expires_in': HOTKEY_CAPTURE_SECONDS}
+
+    def finish_hotkey_capture(self, token, value=None):
+        global _hotkey_capture
+        with _mic_lock:
+            capture = _hotkey_capture
+            if not capture or token != capture[0]:
+                return {'ok': False}
+            try:
+                if value is None:
+                    return {'ok': True}
+                if (time.perf_counter() >= capture[1] or _quitting
+                        or not isinstance(value, str) or value not in HOTKEY_NAMES.values()):
+                    return {'ok': False}
+                with _data_lock:
+                    if SETTINGS['hotkey'] != capture[2]:
+                        return {'ok': False}
+                    if value != SETTINGS['hotkey'] and not self.set_setting('hotkey', value):
+                        return {'ok': False}
+                    return {'ok': True, 'hotkey': value}
+            finally:
+                _hotkey_capture = None
 
     def set_setting(self, key, value):
         global _llm_ok, _cleanup_warm_pending

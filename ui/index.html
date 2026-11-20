@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Listen</title>
-  <link rel="stylesheet" href="app.css?v=20261119-listen19-main-window">
+  <link rel="stylesheet" href="app.css?v=20261119-listen19-in-place-hotkey">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -61,7 +61,7 @@
     <section class="page" data-page="dictate">
       <h1 class="sr-only" tabindex="-1">Dictate</h1>
       <section class="dictate-center" aria-label="Recording controls">
-        <button class="key-visual" id="btn-hotkey-card" type="button" aria-label="Change dictation hotkey, Right Ctrl"><span>Hotkey</span><span class="hotkey-keys" id="hero-key" aria-hidden="true"><kbd>Right Ctrl</kbd></span></button>
+        <button class="key-visual" id="btn-hotkey-card" type="button" aria-haspopup="dialog" aria-controls="hotkey-dialog" aria-label="Change dictation hotkey, Right Ctrl"><span>Hotkey</span><span class="hotkey-keys" id="hero-key" aria-hidden="true"><kbd>Right Ctrl</kbd></span></button>
         <div class="ready-instruction">
           <div class="recording-summary">
             <div class="hero-title" id="hero-title"><span class="quiet-instrument" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><h2 id="dictate-heading">Ready when you are</h2></div>
@@ -112,7 +112,7 @@
       <fieldset class="editor-wrap frame lab-field" aria-labelledby="draft-label">
         <legend class="frame-title lab-field-title">
           <label for="draft" id="draft-label">Draft</label>
-          <span class="score-badge hidden" id="score-badge"></span>
+          <span class="score-badge unscored" id="score-badge">Not scored</span>
           <button class="btn quiet sm hidden" id="btn-revisions" popovertarget="lab-revisions"><span id="draft-version"></span><span class="sr-only"> · Draft revisions</span><svg class="ico down" aria-hidden="true"><use href="#i-chevron"/></svg></button>
         </legend>
         <div class="lab-popover" id="lab-revisions" popover>
@@ -259,6 +259,13 @@
     </footer>
   </dialog>
 
+  <dialog id="hotkey-dialog" class="name-dialog hotkey-dialog" aria-labelledby="hotkey-title" aria-describedby="hotkey-help">
+    <h2 id="hotkey-title">Press your hotkey</h2>
+    <p class="muted" id="hotkey-help">Press and release a supported key to save it. Esc cancels.</p>
+    <button type="button" class="hotkey-capture" id="hotkey-capture" aria-label="Press your hotkey" autofocus><kbd id="hotkey-key" role="status">Listening for keys…</kbd></button>
+    <p class="muted hotkey-options" id="hotkey-options"></p>
+    <div class="actions"><button type="button" class="btn quiet" id="hotkey-cancel">Cancel</button></div>
+  </dialog>
   <dialog id="favorite-name-dialog" class="name-dialog" aria-labelledby="favorite-name-title">
     <form method="dialog">
       <h2 id="favorite-name-title">Save favorite</h2>
@@ -282,6 +289,6 @@
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 </div>
 <script src="model-benchmarks.js?v=20261119-listen19"></script>
-<script src="app.js?v=20261119-listen19-main-window"></script>
+<script src="app.js?v=20261119-listen19-in-place-hotkey"></script>
 </body>
 </html>

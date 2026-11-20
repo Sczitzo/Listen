@@ -40,6 +40,60 @@ d._quitting = False
 d._recording.clear()
 d._hotkey_down = None
 d._skip_release = d._locked = False
+def check_hotkey_picker():
+    from types import SimpleNamespace
+
+    api = d.Api()
+    writes = []
+    def edge(vk, pressed):
+        return d._queued_event_filter(0x100 if pressed else 0x101, SimpleNamespace(vkCode=vk))
+
+    with patch.dict(d.SETTINGS, {'hotkey': 'ctrl_r'}), \
+         patch.object(d, 'atomic_write_json', side_effect=lambda _, values: writes.append(values['hotkey'])), \
+         patch.object(d, 'capture_target', return_value=None):
+        epoch = d._hotkey_epoch
+        first = api.begin_hotkey_capture()
+        assert first['ok'] and d._hotkey_epoch == epoch + 1
+        assert not api.begin_hotkey_capture()['ok']
+        d._recording.set()
+        assert not api.begin_hotkey_capture()['ok']
+        d._recording.clear()
+        assert edge(0xa3, True) is False and d._hotkey_events.empty()
+        assert not api.finish_hotkey_capture('wrong-token', 'shift_r')['ok']
+        assert api.finish_hotkey_capture(first['token'])['ok']
+        edge(0xa3, True)
+        edge(0xa3, False)
+        assert d._hotkey_events.empty() and not writes and d.SETTINGS['hotkey'] == 'ctrl_r'
+        edge(0xa3, True)
+        edge(0xa3, False)
+        assert [d._hotkey_events.get_nowait()[1] for _ in range(2)] == ['press', 'release']
+
+        second = api.begin_hotkey_capture()
+        edge(0xa1, True)
+        edge(0xa1, False)
+        assert api.finish_hotkey_capture(second['token'], 'shift_r') == {'ok': True, 'hotkey': 'shift_r'}
+        assert writes == ['shift_r'] and d.SETTINGS['hotkey'] == 'shift_r'
+        assert d._hotkey_events.empty()
+        third = api.begin_hotkey_capture()
+        assert not api.finish_hotkey_capture(third['token'], 'Ctrl+J')['ok']
+        with patch.object(d, 'HOTKEY_CAPTURE_SECONDS', -1):
+            expired = api.begin_hotkey_capture()
+        assert not api.finish_hotkey_capture(expired['token'], 'ctrl_r')['ok']
+        assert writes == ['shift_r'] and d.SETTINGS['hotkey'] == 'shift_r'
+
+        fourth = api.begin_hotkey_capture()
+        with patch.object(d, 'atomic_write_json', side_effect=OSError):
+            try:
+                api.finish_hotkey_capture(fourth['token'], 'ctrl_r')
+            except OSError:
+                pass
+            else:
+                raise AssertionError('Could not detect a hotkey save failure')
+        assert d._hotkey_capture is None and d.SETTINGS['hotkey'] == 'shift_r'
+        assert not d._hotkey_capture_held
+
+
+check_hotkey_picker()
 entered, release, returned = threading.Event(), threading.Event(), threading.Event()
 failures = []
 original_start = d._start

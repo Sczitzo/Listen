@@ -35,6 +35,11 @@ mock._archives=[];mock._favorites=[{name:"Demo review",text:"Review this synthet
 mock._settings.judge_model="claude-haiku-5-5";
 mock._settings.live_preview=true;
 mock.get_settings=async()=>({...mock._settings});mock.set_setting=async(k,v)=>{mock._settings[k]=v;return true;};
+mock.begin_hotkey_capture = async () => ({ok:true, token:"demo", expires_in:30});
+mock.finish_hotkey_capture = async (_token, value) => {
+  if (value) await mock.set_setting("hotkey", value);
+  return {ok:true, hotkey:value};
+};
 mock.set_text=async(text,id)=>{
   const current=mock._lab;
   if(id!==current.draft_id)return false;
@@ -224,10 +229,106 @@ function show(p, focus = true) {
 }
 $$(".rail-btn").forEach(b => b.onclick = () => show(b.dataset.page));
 $$("[data-goto]").forEach(b => b.onclick = () => show(b.dataset.goto));
-$("#btn-hotkey-card").onclick = () => {
-  show("settings", false);
-  $('#settings-grid select[data-key="hotkey"]')?.focus();
+const hotkeyDialog = $("#hotkey-dialog"), hotkeyCapture = $("#hotkey-capture");
+const hotkeyCodes = {ControlRight:"ctrl_r", ShiftRight:"shift_r", AltRight:"alt_r", Pause:"pause", ScrollLock:"scroll_lock"};
+let hotkeyLease = null, hotkeyOpening = false, hotkeySaving = false, hotkeyPress = null, hotkeyTimer;
+
+$("#btn-hotkey-card").onclick = async () => {
+  if (hotkeyOpening || hotkeyLease) return;
+  hotkeyOpening = true;
+  const started = performance.now();
+  try {
+    const capture = await api().begin_hotkey_capture();
+    if (!capture.ok) {
+      toast("Finish the current recording or release the hotkey before trying again.", true);
+      return;
+    }
+    hotkeyLease = capture.token;
+    const remaining = capture.expires_in * 1000 - (performance.now() - started) - 1000;
+    if (remaining <= 0 || page !== "dictate" || !document.hasFocus()) {
+      await api().finish_hotkey_capture(hotkeyLease);
+      hotkeyLease = null;
+      if (remaining <= 0) toast("Hotkey setup timed out. Click Hotkey to try again.");
+      return;
+    }
+    $("#hotkey-key").textContent = "Listening for keys…";
+    $("#hotkey-options").textContent = "Supported keys: " + Object.keys(options.hotkey).join(", ") + ".";
+    hotkeyDialog.showModal();
+    hotkeyCapture.focus();
+    hotkeyTimer = setTimeout(() => {
+      if (hotkeyDialog.open && !hotkeySaving) {
+        hotkeyDialog.close();
+        toast("Hotkey setup timed out. Click Hotkey to try again.");
+      }
+    }, remaining);
+  } catch {
+    const token = hotkeyLease;
+    hotkeyLease = null;
+    if (token) api().finish_hotkey_capture(token).catch(() => {});
+    toast("Could not start hotkey setup. Try again.", true);
+  } finally { hotkeyOpening = false; }
 };
+hotkeyCapture.addEventListener("keydown", event => {
+  if (event.key === "Tab" || event.key === "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (hotkeySaving || event.repeat) return;
+  const value = hotkeyCodes[event.code], ownAltGraph = event.code === "AltRight" && event.key === "AltGraph";
+  if (hotkeyPress || !value || event.metaKey || (event.shiftKey && event.code !== "ShiftRight")
+      || (event.ctrlKey && event.code !== "ControlRight" && !ownAltGraph)
+      || (event.altKey && event.code !== "AltRight")) {
+    hotkeyPress = null;
+    $("#hotkey-key").textContent = "Try one of the supported keys";
+    return;
+  }
+  hotkeyPress = event.code;
+  $("#hotkey-key").textContent = Object.entries(options.hotkey).find(([, key]) => key === value)?.[0] || event.key;
+});
+hotkeyCapture.addEventListener("keyup", async event => {
+  if (event.code !== hotkeyPress || !hotkeyLease || hotkeySaving) return;
+  event.preventDefault();
+  event.stopPropagation();
+  hotkeyPress = null;
+  hotkeySaving = true;
+  $("#hotkey-cancel").disabled = true;
+  $("#hotkey-key").textContent = "Saving…";
+  try {
+    const result = await api().finish_hotkey_capture(hotkeyLease, hotkeyCodes[event.code]);
+    if (!result.ok) toast("Hotkey wasn’t saved. Open Hotkey to try again.", true);
+    else {
+      settings.hotkey = result.hotkey;
+      renderChips();
+      setStatus(S);
+      toast("Hotkey saved.");
+    }
+  } catch {
+    toast("Hotkey save could not be confirmed. Check the displayed shortcut before trying again.", true);
+    try {
+      settings.hotkey = (await api().get_settings()).hotkey;
+      renderChips();
+      setStatus(S);
+    } catch { /* Reopening the app can recover the displayed saved choice. */ }
+  } finally {
+    hotkeySaving = false;
+    $("#hotkey-cancel").disabled = false;
+    hotkeyDialog.close();
+  }
+});
+hotkeyCapture.addEventListener("blur", () => { hotkeyPress = null; });
+$("#hotkey-cancel").onclick = () => hotkeyDialog.close();
+hotkeyDialog.addEventListener("cancel", event => { if (hotkeySaving) event.preventDefault(); });
+window.addEventListener("blur", () => { if (hotkeyDialog.open && !hotkeySaving) hotkeyDialog.close(); });
+hotkeyDialog.addEventListener("close", async () => {
+  clearTimeout(hotkeyTimer);
+  hotkeyPress = null;
+  const token = hotkeyLease;
+  try { if (token) await api().finish_hotkey_capture(token); }
+  catch { /* The native lease expires even if the bridge disconnects. */ }
+  finally {
+    hotkeyLease = null;
+    if (page === "dictate" && document.hasFocus()) $("#btn-hotkey-card").focus();
+  }
+});
 $(".main").addEventListener("focusin", event => {
   if (!event.target.matches(".frame-input, .editor")) return;
   const frame = event.target.closest("fieldset.frame"), workspace = $(".main");
@@ -954,8 +1055,8 @@ function renderLabActivity() {
   setDisplayedProperty(pass, "ariaDisabled", String(blocked || !ed.value.trim()));
   setDisplayedProperty(pass, "textContent", grade ? "Refine" : "Engineer");
   pass.classList.toggle("primary", !grade);
-  badge.classList.toggle("hidden", !grade);
-  setDisplayedProperty(badge, "textContent", grade ? `Score ${grade.score}/10` : "");
+  badge.classList.toggle("unscored", !grade);
+  setDisplayedProperty(badge, "textContent", grade ? `Score ${grade.score}/10` : "Not scored");
   copy.classList.toggle("hidden", !grade);
   setDisplayedProperty(copy, "ariaDisabled", String(locked));
   setDisplayedProperty($("#btn-send"), "ariaDisabled", String(blocked));

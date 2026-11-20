@@ -435,6 +435,13 @@ select, input, .chip, .status, .switch, .rev, kbd { font-family:var(--control-fo
 .page[data-page="lab"]>.editor-wrap { min-height:0; }
 .page[data-page="lab"] .editor { flex:none; height:clamp(180px, 36vh, 260px); resize:vertical; }
 .lab-field-title #score-badge { padding:0 8px; line-height:20px; }
+#score-badge.unscored { color:var(--muted); background:var(--surface); font-weight:500; }
+.hotkey-dialog h2 { font-size:20px; margin:0 0 8px; }
+.hotkey-dialog p { margin:0 0 16px; }
+.hotkey-capture { width:100%; min-height:88px; padding:16px; border:1px solid var(--accent); border-radius:8px; color:var(--fg); background:var(--bg); }
+.hotkey-capture kbd { font:600 24px/1.4 var(--control-font); overflow-wrap:anywhere; border:0; background:none; }
+.hotkey-capture:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
+.hotkey-dialog .hotkey-options { margin:12px 0 0; font-size:12px; }
 .legacy-lab-tools { font-size:14px; }
 .legacy-lab-tools > summary { cursor:pointer; color:var(--accent); }
 .legacy-lab-tools > :not(summary) { margin-top:8px; }
