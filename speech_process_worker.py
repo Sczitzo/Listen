@@ -87,6 +87,7 @@ def main():
                 runtime._initialize()
             else:
                 runtime._load_cpu(init.get('reason') or 'cuda_startup_unavailable')
+        import numpy as np
         send('ready', status=runtime.status())
     except Exception as error:
         reason = error.reason if isinstance(error, SpeechUnavailableError) else 'speech_unavailable'
@@ -96,7 +97,6 @@ def main():
         send('error', **values)
         return 1
 
-    import numpy as np
     while True:
         try:
             message, audio = _read_frame(incoming)
