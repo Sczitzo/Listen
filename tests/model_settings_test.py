@@ -19,6 +19,8 @@ scope = dict(SETTINGS={'local_model': 'qwen2.5:7b'}, OLLAMA_MODEL='qwen2.5:7b',
              MODEL_SIZE='small', requests=SimpleNamespace(get=get), _NO_PROXY={},
              _data_lock=threading.RLock(), cached_speech_models=lambda: {'Whisper Small': 'small'},
              speech_model_label=speech_model_label, speech_model_note=speech_model_note,
+             PROMPT_PROVIDERS={'openai': ('OpenAI', 'Example model', ('OPENAI_API_KEY',))},
+             _prompt_api_key=lambda _: 'synthetic-key',
              **{k: {} for k in ('HOTKEY_NAMES', 'STYLE_NAMES', 'TARGET_NAMES', 'JUDGE_NAMES', 'JUDGE_MODEL_NAMES', 'ENGINE_NAMES')})
 for method in methods:
     exec(compile(ast.Module(body=[method], type_ignores=[]), 'actual-model-settings', 'exec'), scope)
@@ -27,6 +29,9 @@ result = scope['get_local_models'](receiver)
 assert result.get('available') is True, 'successful inventory must explicitly confirm availability'
 assert result['models'] == ['qwen2.5:7b', 'qwen3.5:4b']
 assert scope['get_options'](receiver)['speech_model'] == 'small', 'speech model must come from its actual configuration'
+assert scope['get_options'](receiver)['prompt_providers'] == {
+    'openai': {'name': 'OpenAI', 'configured': True, 'model': 'Example model', 'key_env': 'OPENAI_API_KEY'},
+}
 scope['MODEL_SIZE'] = 'parakeet-unified-en-0.6b'
 parakeet = scope['get_options'](receiver)
 assert 'Parakeet' in parakeet['speech_model_label'] and 'Q8_0' in parakeet['speech_model_label']
@@ -62,7 +67,8 @@ function setup(){
  const c=vm.createContext({settings:{local_model:stored},previewSettingVersion:0,page:'dictate',$:s=>nodes[s],
   Option:function(text,value,defaultSelected,selected){Object.assign(this,{text,value,defaultSelected,selected,disabled:false})},
   api:()=>backend,toast:message=>messages.push(message),renderChips:()=>{},syncSettings:()=>{}});
- vm.runInContext(source.slice(settingStart,settingEnd)+source.slice(start,end),c);
+ vm.runInContext(source.slice(source.indexOf('let promptModelNames ='),source.indexOf('function chip('))
+   +source.slice(settingStart,settingEnd)+source.slice(start,end),c);
  return {c,backend,messages,reopen,get select(){return nodes['#local-model']},get status(){return nodes['#model-status']},get button(){return nodes['#refresh-models']},
   get stored(){return stored},get reads(){return reads},get writes(){return writes},refresh:()=>vm.runInContext('refreshModels()',c)};
 }

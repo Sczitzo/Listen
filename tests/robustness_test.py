@@ -71,11 +71,15 @@ with quiet:
 assert d._recording.is_set()
 d._mic_ready = False; d._recording.clear(); d._state = 'idle'
 
-# 5. Local model calls bypass system proxies (privacy): every requests call in dictate.py passes _NO_PROXY,
-# and requests really drops the environment proxy when given it.
+# 5. Local model calls bypass system proxies. The explicit cloud adapter has its own route checks.
 src = Path(d.__file__).read_text(encoding='utf-8')
-sites = src.count('requests.post(') + src.count('requests.get(')
-assert sites == 3 and src.count('proxies=_NO_PROXY') == 3, sites
+cloud_start = src.index('def _call_prompt_provider(')
+cloud_end = src.index('\ndef engineer(', cloud_start)
+cloud_adapter = src[cloud_start:cloud_end]
+assert cloud_adapter.count('requests.post(') == 1 and 'allow_redirects=False' in cloud_adapter
+local_src = src[:cloud_start] + src[cloud_end:]
+sites = local_src.count('requests.post(') + local_src.count('requests.get(')
+assert sites == 3 and local_src.count('proxies=_NO_PROXY') == 3, sites
 os.environ['HTTP_PROXY'] = 'http://proxy.invalid:9'
 session = d.requests.Session()
 assert session.merge_environment_settings('http://127.0.0.1:11434/', {}, None, None, None)['proxies'].get('http')

@@ -9,7 +9,8 @@ def ensure(r):
     defaults = {'_workspace_store': lambda: WorkspaceStore(r.APP_DIR), '_cost_ledger': lambda: CostLedger(r.APP_DIR),
         '_workspace_id': lambda: str(uuid.uuid4()), '_archived': list, '_composer': lambda: '',
         '_composer_edit_id': lambda: -1, '_pending': lambda: None, '_save_error': lambda: '',
-        '_session_cost': lambda: 0, '_cost_error': lambda: '', '_favorite_undo': dict,
+        '_session_cost': lambda: 0, '_session_unpriced': lambda: 0,
+        '_cost_error': lambda: '', '_favorite_undo': dict,
         '_session_call_ids': set}
     for key, factory in defaults.items():
         if not hasattr(r, key): setattr(r, key, factory())
@@ -150,16 +151,19 @@ def set_candidate(r, text, kind, by, cost, epoch, source_text):
         return copy.deepcopy(r._pending)
 
 
-def record_cost(r, model, operation, cost, call_id=None):
+def record_cost(r, model, operation, cost, call_id=None, *, provider='anthropic'):
     ensure(r)
     with r._data_lock:
-        event = dict(provider='anthropic', model=model, operation=operation, cost=cost)
+        event = dict(provider=provider, model=model, operation=operation, cost=cost)
         if call_id is not None: event['id'] = call_id
         try:
             identity = r._cost_ledger.append(event)
             if identity not in r._session_call_ids:
                 r._session_call_ids.add(identity)
-                if cost is not None: r._session_cost += cost
+                if cost is None:
+                    r._session_unpriced += 1
+                else:
+                    r._session_cost += cost
         except Exception:
             r._cost_error = 'An operation cost could not be saved. The estimate may be incomplete.'
 

@@ -265,18 +265,24 @@ HOTKEY_NAMES = {"Right Ctrl": "ctrl_r", "Right Shift": "shift_r", "Right Alt": "
                 "Pause": "pause", "Scroll Lock": "scroll_lock"}
 STYLE_NAMES = {"Tighten rambles": "tighten", "Clean only": "clean"}
 TARGET_NAMES = {"Claude Code": "claude_code", "General AI": "general"}
-JUDGE_NAMES = {"Claude (API)": "anthropic", "Local model": "local"}
+PROMPT_PROVIDERS = {
+    "anthropic": ("Claude", None, ("ANTHROPIC_API_KEY",)),
+    "openai": ("OpenAI", "gpt-5-mini", ("OPENAI_API_KEY",)),
+    "gemini": ("Gemini", "gemini-3.5-flash-lite", ("GEMINI_API_KEY", "GOOGLE_API_KEY")),
+}
+ENGINE_NAMES = {f"{name} (API)": route for route, (name, _, _) in PROMPT_PROVIDERS.items()} | {"Local model": "local"}
+JUDGE_NAMES = ENGINE_NAMES
 DEFAULT_JUDGE_MODEL = "claude-haiku-5-5"
 JUDGE_MODEL_NAMES = {"Haiku 5.5 · budget": DEFAULT_JUDGE_MODEL,
                      "Sonnet 5.5 · deeper critique": "claude-sonnet-5-5",
                      "Opus 5.5 · detailed review": "claude-opus-5-5"}
-ENGINE_NAMES = {"Claude (API)": "anthropic", "Local model": "local"}
 LEARNED_FILE = os.path.join(APP_DIR, "learned.json")
 SETTINGS = {"hotkey": "ctrl_r", "cleanup": True, "style": "tighten", "learn": True, "live_preview": True,
             "vocab": "", "target": "claude_code", "judge": "anthropic", "engine": "anthropic"}
 SETTINGS["microphone"] = None
 SETTINGS['speech_model'] = DEFAULT_SPEECH_MODEL
-SETTINGS.update(local_model="qwen2.5:7b", cloud_enabled=False, judge_model=DEFAULT_JUDGE_MODEL)
+SETTINGS.update(local_model="qwen2.5:7b", engine_local_model="", judge_local_model="",
+                cloud_enabled=False, judge_model=DEFAULT_JUDGE_MODEL)
 SETTINGS = validated_settings(load_json(SETTINGS_FILE, {}), SETTINGS)
 _data_lock = threading.RLock()
 
@@ -1795,21 +1801,21 @@ def paste(text, target=None):
         return result
 
 
-def _chat(system, user, *, cleanup_budget=None):
+def _chat(system, user, *, cleanup_budget=None, model=None):
     started = time.perf_counter()
     lease = _draft.gate.reserve_authoritative()
     try:
         _draft.gate.wait_draft(.5)
         if cleanup_budget is not None:
             cleanup_budget = max(.001, cleanup_budget - (time.perf_counter() - started))
-        return _chat_impl(system, user, cleanup_budget=cleanup_budget)
+        return _chat_impl(system, user, cleanup_budget=cleanup_budget, model=model)
     finally:
         lease.release()
 
 
-def _chat_impl(system, user, *, cleanup_budget=None):
+def _chat_impl(system, user, *, cleanup_budget=None, model=None):
     global _last_cleanup_timing
-    selected = _operation_settings().get("local_model", OLLAMA_MODEL)
+    selected = model or _operation_settings().get("local_model", OLLAMA_MODEL)
     try:
         payload = {
             "model": selected,
@@ -1929,6 +1935,91 @@ def _claude(model, system, user, schema=None):
     return text, cost
 
 
+class PromptProviderError(RuntimeError):
+    """An app-authored, display-safe message about a cloud prompt operation."""
+
+
+def _prompt_api_key(provider):
+    if provider == "anthropic":
+        return _api_key()
+    for variable in PROMPT_PROVIDERS[provider][2]:
+        for key in (os.environ.get(variable), _user_env(variable)):
+            if isinstance(key, str) and key.strip():
+                return key.strip()
+    return None
+
+
+def _require_prompt_connection(provider):
+    name, _, variables = PROMPT_PROVIDERS[provider]
+    if not _operation_settings().get("cloud_enabled") or not SETTINGS.get("cloud_enabled"):
+        raise PromptProviderError(f"Turn on paid cloud AI in Settings before using {name}.")
+    key = _prompt_api_key(provider)
+    if not key:
+        raise PromptProviderError(f"{name} needs an API key. Set {' or '.join(variables)} and try again.")
+    return key
+
+
+def _call_prompt_provider(provider, system, user, schema=None):
+    name, model, _ = PROMPT_PROVIDERS[provider]
+    key = _require_prompt_connection(provider)
+    if provider == "openai":
+        url = "https://api.openai.com/v1/responses"
+        headers = {"Authorization": f"Bearer {key}"}
+        body = {"model": model, "store": False, "instructions": system, "input": user,
+                "max_output_tokens": 4000, "reasoning": {"effort": "minimal"}}
+        if schema:
+            body["text"] = {"format": {"type": "json_schema", "name": "prompt_review",
+                                       "strict": True, "schema": schema}}
+    else:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        headers = {"x-goog-api-key": key}
+        config = {"maxOutputTokens": 4000}
+        if schema:
+            config.update(responseMimeType="application/json", responseJsonSchema=schema)
+        body = {"systemInstruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "generationConfig": config}
+    try:
+        response = requests.post(url, json=body, headers=headers, timeout=(5, 55), allow_redirects=False)
+    except requests.Timeout:
+        raise PromptProviderError(f"{name} took too long to respond. Try again when you're ready.") from None
+    except requests.RequestException:
+        raise PromptProviderError(f"Listen could not reach {name}. Check your connection and try again.") from None
+    finally:
+        # Account for attempted calls independently of workspace changes and provider response parsing.
+        record_cost(sys.modules[__name__], model, "score" if schema else "rewrite",
+                    None, str(uuid.uuid4()), provider=provider)
+    if response.status_code in (401, 403):
+        raise PromptProviderError(f"{name} rejected the API key or account access. Check your provider account.")
+    if response.status_code == 429:
+        raise PromptProviderError(f"{name} reached a request or usage limit. Check your provider account.")
+    if response.status_code == 404:
+        raise PromptProviderError(f"{name} did not make {model} available to this account.")
+    if not 200 <= response.status_code < 300:
+        raise PromptProviderError(f"{name} could not complete the request. Try again when you're ready.")
+    try:
+        data = response.json()
+        if provider == "openai":
+            if data["status"] != "completed":
+                raise ValueError("Incomplete response")
+            parts = [part for item in data["output"] if item["type"] == "message"
+                     for part in item["content"]]
+            if any(part["type"] == "refusal" for part in parts):
+                raise ValueError("Response refused")
+            text = "".join(part["text"] for part in parts if part["type"] == "output_text")
+        else:
+            candidate = data["candidates"][0]
+            if candidate["finishReason"] != "STOP":
+                raise ValueError("Incomplete response")
+            text = "".join(part.get("text", "") for part in candidate["content"]["parts"]
+                           if not part.get("thought"))
+        if not text.strip():
+            raise ValueError("Empty response")
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        raise PromptProviderError(f"{name} did not return a complete usable response. Try again.") from None
+    return text.strip(), model
+
+
 def engineer(raw: str, draft=None):
     # returns (prompt, by, cost); no length guard: a good prompt is longer than the ramble
     choices = _operation_settings()
@@ -1939,6 +2030,9 @@ def engineer(raw: str, draft=None):
         if preferences:
             data['learned_style_preferences'] = preferences
     user = json.dumps(data, ensure_ascii=False)
+    if choices["engine"] in ("openai", "gemini"):
+        text, model = _call_prompt_provider(choices["engine"], system, user)
+        return text, model, 0.0
     if choices["engine"] == "anthropic" and choices.get("cloud_enabled", False):
         try:
             text, cost = _claude(ENGINE_MODEL, system, user)
@@ -1946,7 +2040,9 @@ def engineer(raw: str, draft=None):
         except Exception as e:  # no SDK, no key, offline: fall back to the local model
             print(f"[warn] engineer: {type(e).__name__}; falling back to local")
     try:
-        return _chat(system, user) or draft or raw, choices.get("local_model", OLLAMA_MODEL), 0.0
+        override = choices.get("engine_local_model")
+        local = _chat(system, user, model=override) if override else _chat(system, user)
+        return local or draft or raw, override or choices.get("local_model", OLLAMA_MODEL), 0.0
     except Exception as e:
         print(f"[warn] Ollama unavailable ({type(e).__name__}); showing raw transcript.")
         raise RuntimeError("Rewrite unavailable; original draft and instruction preserved") from e
@@ -1978,7 +2074,8 @@ def _judge_local(prompt):
 
 
 def _judge_local_impl(prompt):
-    selected = _operation_settings().get("local_model", OLLAMA_MODEL)
+    choices = _operation_settings()
+    selected = choices.get("judge_local_model") or choices.get("local_model", OLLAMA_MODEL)
     r = requests.post(OLLAMA_URL, json={
         "model": selected, "stream": False, "keep_alive": KEEP_ALIVE, "format": JUDGE_SCHEMA,
         "options": {"temperature": 0, "num_ctx": NUM_CTX, "num_predict": 4000, "num_batch": cleanup_http.NUM_BATCH},
@@ -1997,8 +2094,20 @@ def _judge_local_impl(prompt):
 def run_judge(prompt):
     """Score + improved rewrite for one prompt; Claude when selected and reachable, else local qwen."""
     note = ""
+    provider = _operation_settings()["judge"]
+    if provider in ("openai", "gemini"):
+        text, model = _call_prompt_provider(provider, JUDGE_PROMPT, _judge_user_msg(prompt), JUDGE_SCHEMA)
+        try:
+            data = json.loads(text)
+            data.update(by=model, cost=0.0)
+            data = validate_score(data)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            name = PROMPT_PROVIDERS[provider][0]
+            raise PromptProviderError(f"{name} returned unusable feedback. Try again.") from None
+        data["note"] = ""
+        return without_review_followups(data, prompt)
     try:
-        if _operation_settings()["judge"] != "anthropic" or not _operation_settings().get("cloud_enabled", False):
+        if provider != "anthropic" or not _operation_settings().get("cloud_enabled", False):
             raise LookupError("local judge selected")
         data = _judge_anthropic(prompt)
     except LookupError:
@@ -2012,7 +2121,6 @@ def run_judge(prompt):
     data = without_review_followups(data, prompt)
     print(f"[judge] {data['score']}/10 by {data['by']} ${data['cost']:.3f} gaps={len(data['gaps'])}")
     return data
-    # ponytail: OpenAI judge not built; add a _judge_openai() and a JUDGE_NAMES entry when wanted
 
 
 # ------------------------------------------------------- prompt lab ----
@@ -2077,13 +2185,15 @@ def _lab_score(rev, feedback_id=None):
 
 def _lab_failure_message(op, error):
     error = error.__cause__ or error
-    if isinstance(error, (TimeoutError, requests.Timeout)):
+    if isinstance(error, PromptProviderError):
+        explanation = str(error)
+    elif isinstance(error, (TimeoutError, requests.Timeout)):
         explanation = "The local model took too long to respond. Wait a moment, then try again."
     elif isinstance(error, requests.ConnectionError):
         explanation = "Listen could not connect to Ollama. Make sure Ollama is running, then try again."
     elif isinstance(error, requests.HTTPError):
         if getattr(error.response, 'status_code', None) == 404:
-            explanation = "The selected local model is unavailable. Check AI text model (Ollama) in Settings, then try again."
+            explanation = "The selected local model is unavailable. Pick an installed Ollama model in Settings, then try again."
         else:
             explanation = "The local model could not complete the request. Check Ollama, then try again."
     elif isinstance(error, json.JSONDecodeError):
@@ -2201,6 +2311,10 @@ def lab_draft_pass(request, refine):
     epoch, current, source = _lab_snapshot()
     if current is None or not _lab_valid(epoch):
         return
+    choices = _operation_settings()
+    for stage in ("engine", "judge"):
+        if choices[stage] in ("openai", "gemini"):
+            _require_prompt_connection(choices[stage])
     if refine:
         candidate, by, cost = engineer(
             "Improve the prompt's clarity and usefulness. Preserve the intent, facts, and constraints.", source)
@@ -2278,7 +2392,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261119-listen19-score-trends"
+UI_VERSION = "20261119-listen19-providers"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -2519,8 +2633,14 @@ class Api(ExperienceApi):
     def get_options(self):
         with _data_lock:
             selected = MODEL_SIZE
+        providers = {
+            route: {"name": name, "configured": bool(_prompt_api_key(route)),
+                    "model": model, "key_env": " or ".join(variables)}
+            for route, (name, model, variables) in PROMPT_PROVIDERS.items()
+        }
         return {"hotkey": HOTKEY_NAMES, "style": STYLE_NAMES, "target": TARGET_NAMES,
                 "judge": JUDGE_NAMES, "judge_model": JUDGE_MODEL_NAMES, "engine": ENGINE_NAMES,
+                "prompt_providers": providers,
                 "microphone": self.get_microphones(), "speech_model": selected,
                 "speech_models": cached_speech_models(),
                 "speech_model_label": speech_model_label(selected), "speech_model_note": speech_model_note(selected)}
@@ -2573,7 +2693,7 @@ class Api(ExperienceApi):
                 resolve_microphone(sd, value)
             except Exception:
                 return False
-        if key == "local_model":
+        if key == "local_model" or (key in ("engine_local_model", "judge_local_model") and value):
             inventory = self.get_local_models()
             if value not in inventory["models"]:
                 return False
@@ -2676,7 +2796,7 @@ class Api(ExperienceApi):
                 "score": cur["score"] if cur else None, "prev_score": prev,
                 "fav": _lab["fav"], "busy": _lab["busy"], "error": _lab["error"], "error_op": _lab.get("error_op", ""),
                 "draft_pass": _lab.get("draft_pass"), "prepared_pass": prepared["id"] if prepared else None,
-                "session_cost": _lab_cost()}
+                "session_cost": _lab_cost(), "session_unpriced": _session_unpriced}
 
     @_locked_lab
     def set_text(self, text, draft_id=None, edit_id=None):
@@ -3026,8 +3146,10 @@ class Api(ExperienceApi):
                                'draft_source_revision', 'final_outcome')}, ensure_ascii=True),
                 "speech": _speech_description(speech),
                 "clean-up": f"{SETTINGS.get('local_model', OLLAMA_MODEL)} via Ollama at 127.0.0.1, released after {KEEP_ALIVE} idle",
-                "prompt lab": f"engineer {ENGINE_MODEL}, cloud judge {SETTINGS.get('judge_model', JUDGE_MODEL)}, "
-                              + ("ANTHROPIC_API_KEY found" if _api_key() else "no API key: local fallback"),
+                "prompt lab": f"writing via {SETTINGS['engine']}, checking via {SETTINGS['judge']}; "
+                              + (f"Claude judge {SETTINGS.get('judge_model', JUDGE_MODEL)}; "
+                                 if SETTINGS['judge'] == 'anthropic' else "")
+                              + ("paid cloud enabled" if SETTINGS.get("cloud_enabled") else "paid cloud off"),
                 "files": f"{SETTINGS_FILE} · {HISTORY} · {FAVORITES} · {LOG}"}
 
 

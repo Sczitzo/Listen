@@ -81,7 +81,8 @@ def runtime():
                  '_lab_valid', '_lab_cur', '_lab_rev', '_lab_add'}
     tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
     nodes = [node for node in tree.body
-             if isinstance(node, ast.FunctionDef) and node.name in functions]
+             if (isinstance(node, ast.FunctionDef) and node.name in functions)
+             or (isinstance(node, ast.ClassDef) and node.name == 'PromptProviderError')]
     api = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Api')
     api.body = [node for node in api.body if isinstance(node, ast.FunctionDef)
                 and node.name in {'_runtime', 'submit', 'improve', 'rebuild', 'score'}]

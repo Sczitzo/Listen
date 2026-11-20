@@ -100,7 +100,7 @@ await run('Prompt Lab quality thresholds match for total and rubric scores',asyn
 await run('Prompt Lab chip focus kept after re-render',async()=>{
  const R=registry(),active=el();active.dataset.key='target';active.closest=s=>s==='.chips'?{id:'chips-lab'}:null;
  const c=vm.createContext({document:{activeElement:active},settings:{cleanup:true,hotkey:'ctrl_r',style:'tighten'},options:{hotkey:{'Right Ctrl':'ctrl_r'},style:{},target:{},engine:{},judge:{}},esc:x=>String(x),$:R,$$:()=>[],setSetting(){}});
- vm.runInContext(cut('const htmlCache','// ---------- state')+cut('function chip(','async function setSetting('),c);
+ vm.runInContext(cut('const htmlCache','// ---------- state')+cut('let promptModelNames =','async function setSetting('),c);
  vm.runInContext('renderChips()',c);
  assert.equal(R('#chips-lab [data-key="target"]').focusCount,1,'keyboard focus was not restored to the target chip');
  assert(R('#hero-key').innerHTML.includes('<kbd>Right Ctrl</kbd>'),'the single key lost its side');
@@ -116,7 +116,7 @@ await run('settings page updated in place (On/Off text, aria-checked)',async()=>
  const sw=el(),label=el();sw.dataset.toggle='cleanup';sw.querySelector=()=>label;
  const sel=el();sel.dataset.key='style';sel.options=[{value:'clean'},{value:'tighten'}];sel.value='tighten';
  const c=vm.createContext({settings:{cleanup:false,style:'clean'},$:()=>null,$$:s=>s==='#settings-grid .switch'?[sw]:s==='#settings-grid select[data-key]'?[sel]:[],esc:x=>String(x),options:{},api:()=>({}),refreshModels(){},renderLearned(){},setSetting(){}});
- vm.runInContext(cut('const SETTING_ROWS =','async function refreshModels()'),c);
+ vm.runInContext(cut('let promptModelNames =','function chip(')+cut('const SETTING_ROWS =','async function refreshModels()'),c);
  vm.runInContext('syncSettings()',c);
  assert.equal(sw.attrs['aria-checked'],'false');assert.equal(label.textContent,'Off');assert(!sw.cls.has('on'));assert.equal(sel.value,'clean');
  c.settings.cleanup=true;vm.runInContext('syncSettings()',c);assert.equal(label.textContent,'On');assert(sw.cls.has('on'));
@@ -124,13 +124,29 @@ await run('settings page updated in place (On/Off text, aria-checked)',async()=>
 await run('renderSettings has four processing stages with the shared model under AI cleanup',async()=>{
  const R=registry();
  const c=vm.createContext({settings:{cleanup:true,live_preview:false},options:{},esc:x=>String(x),$:R,$$:()=>[],api:()=>({diagnostics:async()=>({})}),refreshModels(){},renderLearned(){},setSetting(){}});
- vm.runInContext(cut('const SETTING_ROWS =','async function refreshModels()')+'renderSettings()',c);
+ vm.runInContext(cut('let promptModelNames =','function chip(')+cut('const SETTING_ROWS =','async function refreshModels()')+'renderSettings()',c);
  const m=R('#settings-grid').innerHTML;
  assert(m.includes('>On</span>')&&m.includes('>Off</span>'),'switches lack visible On/Off text');
  assert(m.indexOf('id="stage-cleanup"')<m.indexOf('id="local-model"')&&m.indexOf('id="local-model"')<m.indexOf('id="stage-writing"'),'model row not under AI cleanup');
  assert.equal((m.match(/id="local-model"/g)||[]).length,1,'Shared local model must have one selection owner');
  assert(m.indexOf('data-key="hotkey"')<m.indexOf('<details'), 'The current hotkey selector must be visible above the collapsed settings');
  assert(m.indexOf('id="local-settings"')<m.indexOf('id="prompt-settings"'), 'Local and cloud choices must remain in separate disclosures');
+});
+await run('Prompt Lab describes independent models and a missing provider key',async()=>{
+ const c=vm.createContext({settings:{engine:'openai',judge:'local',judge_local_model:'qwen:review',local_model:'qwen:cleanup',cloud_enabled:false},
+  options:{prompt_providers:{openai:{name:'OpenAI',configured:false,model:'Example',key_env:'OPENAI_API_KEY'}}},
+  esc:x=>String(x),renderChips(){}});
+ vm.runInContext(cut('let promptModelNames =','function chip('),c);
+ assert.match(c.promptRouteSummary('engine'),/OpenAI selected. Paid cloud is off/);
+ c.settings.cloud_enabled=true;
+ assert.match(c.promptRouteSummary('engine'),/API key missing/);
+ c.options.prompt_providers.openai.configured=true;
+ assert.match(c.promptRouteSummary('engine'),/OpenAI · Example/);
+ c.rememberPromptModels({models:['qwen:review','qwen:another'],available:true});
+ assert.match(c.promptLocalChoices('judge_local_model'),/value="qwen:review" selected/);
+ assert.match(c.promptRouteSummary('judge'),/qwen:review/);
+ c.rememberPromptModels({models:['qwen:another'],available:true});
+ assert.match(c.promptLocalChoices('judge_local_model'),/value="qwen:review" selected disabled/);
 });
 await run('setSetting on Settings page does not rebuild the page',async()=>{
  let rendered=0,synced=0;

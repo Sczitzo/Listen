@@ -93,8 +93,9 @@ def valid_setting(key, value):
     if key == 'speech_model':
         from speech_runtime import SPEECH_MODEL_IDS
         return isinstance(value, str) and value in SPEECH_MODEL_IDS
+    prompt_routes = {'anthropic', 'openai', 'gemini', 'local'}
     options = {'hotkey': {'ctrl_r', 'shift_r', 'alt_r', 'pause', 'scroll_lock'}, 'style': {'tighten', 'clean'},
-               'target': {'claude_code', 'general'}, 'judge': {'anthropic', 'local'}, 'engine': {'anthropic', 'local'},
+               'target': {'claude_code', 'general'}, 'judge': prompt_routes, 'engine': prompt_routes,
                'judge_model': {'claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'}}
     if key in options:
         return isinstance(value, str) and value in options[key]
@@ -102,6 +103,8 @@ def valid_setting(key, value):
         return type(value) is bool
     if key == 'local_model':
         return isinstance(value, str) and bool(value.strip()) and len(value) <= 200
+    if key in ('engine_local_model', 'judge_local_model'):
+        return value == '' or valid_setting('local_model', value)
     if key == 'vocab':
         return isinstance(value, str)
     if key == 'microphone':

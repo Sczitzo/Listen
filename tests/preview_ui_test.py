@@ -181,7 +181,7 @@ async function controlsAndGrouping(){
  assert(!h.$('#btn-finish').disabled&&!h.$('#btn-cancel').disabled);
  h.c.st=state(4,'',{state:'idle',preview_busy:true,speech_runtime:{state:'ready',device:'cpu',fallback:true}});vm.runInContext('setStatus(st)',h.c);
  assert.match(h.$('#speech-runtime-status').textContent,/Your selected speech model is unchanged/);
- vm.runInContext(between('const SETTING_ROWS =','async function refreshModels()'),h.c);
+ vm.runInContext(between('let promptModelNames =','function chip(')+between('const SETTING_ROWS =','async function refreshModels()'),h.c);
  vm.runInContext('renderSettings()',h.c);await Promise.resolve();
  const markup=h.$('#settings-grid').innerHTML;
  const stages=['stage-speech','stage-cleanup','stage-writing','stage-review'];

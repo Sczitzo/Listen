@@ -3,7 +3,8 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const OPTS = { hotkey: { "Right Ctrl": "ctrl_r", "Right Shift": "shift_r", "Right Alt": "alt_r", "Pause": "pause", "Scroll Lock": "scroll_lock" }, style: { "Tighten rambles": "tighten", "Clean only": "clean" }, target: { "Claude Code": "claude_code", "General AI": "general" }, judge: { "Claude (API)": "anthropic", "Local model": "local" }, judge_model: { "Haiku 5.5 · budget": "claude-haiku-5-5", "Sonnet 5.5 · deeper critique": "claude-sonnet-5-5", "Opus 5.5 · detailed review": "claude-opus-5-5" }, engine: { "Claude (API)": "anthropic", "Local model": "local" } };
+const DEMO_ROUTES = { "Claude (API)": "anthropic", "OpenAI (API)": "openai", "Gemini (API)": "gemini", "Local model": "local" };
+const OPTS = { hotkey: { "Right Ctrl": "ctrl_r", "Right Shift": "shift_r", "Right Alt": "alt_r", "Pause": "pause", "Scroll Lock": "scroll_lock" }, style: { "Tighten rambles": "tighten", "Clean only": "clean" }, target: { "Claude Code": "claude_code", "General AI": "general" }, judge: DEMO_ROUTES, judge_model: { "Haiku 5.5 · budget": "claude-haiku-5-5", "Sonnet 5.5 · deeper critique": "claude-sonnet-5-5", "Opus 5.5 · detailed review": "claude-opus-5-5" }, engine: DEMO_ROUTES };
 
 // ---------- bridge (pywebview) with a browser-only mock for design work ----------
 const mock = {
@@ -16,7 +17,11 @@ const mock = {
   get_options: async () => {
     const models={"Parakeet Unified English 0.6B (default)":"parakeet-unified-en-0.6b","Whisper Small":"small","Whisper Medium":"medium","Whisper Large v3":"large-v3","Whisper Large v3 Turbo":"large-v3-turbo"};
     const selected=mock._settings?.speech_model||"parakeet-unified-en-0.6b";
-    return {...OPTS,speech_models:models,speech_model:selected,speech_model_label:Object.entries(models).find(([,value])=>value===selected)?.[0]||selected,speech_model_note:"Simulated model choices. No installed cache is checked in this demo."};
+    return {...OPTS, prompt_providers:{
+        anthropic:{name:"Claude",configured:true,key_env:"ANTHROPIC_API_KEY"},
+        openai:{name:"OpenAI",configured:true,model:"Sample OpenAI model",key_env:"OPENAI_API_KEY"},
+        gemini:{name:"Gemini",configured:false,model:"Sample Gemini model",key_env:"GEMINI_API_KEY or GOOGLE_API_KEY"}
+      }, speech_models:models,speech_model:selected,speech_model_label:Object.entries(models).find(([,value])=>value===selected)?.[0]||selected,speech_model_note:"Simulated model choices. No installed cache is checked in this demo."};
   },
   get_history: async () => [{ ts: "2026-09-12T10:12:00", kind: "dictate", text: "Add a dark mode toggle to the settings page and remember the choice between launches.", raw: "um add a dark mode toggle", secs: 6.2, latency: 0.9, cost: 0 }, { ts: "2026-09-11T18:02:00", kind: "dictate", text: "Ship it before Friday and let QA know.", raw: "ship it uh before friday", secs: 3.1, latency: 0.7, cost: 0 }],
   get_stats: async () => ({ today: 7, week: 41, words_week: 3120, minutes_week: 22.4, wpm: 139, latency: 0.8, spend_month: 0.42,
@@ -33,7 +38,7 @@ const mock = {
 };
 // Synthetic browser demo implements the same acknowledgement contract without side effects.
 Object.assign(mock._lab,{draft_id:"demo-1",workspace_id:"demo-1",composer:"",pending:null,saved:true,save_error:""});
-mock._archives=[];mock._favorites=[{name:"Demo review",text:"Review this synthetic example",uses:1}];mock._undo={};mock._settings={hotkey:"ctrl_r",cleanup:true,style:"tighten",vocab:"ExampleName",target:"general",judge:"local",engine:"local",local_model:"qwen2.5:7b",cloud_enabled:false,learn:true};
+mock._archives=[];mock._favorites=[{name:"Demo review",text:"Review this synthetic example",uses:1}];mock._undo={};mock._settings={hotkey:"ctrl_r",cleanup:true,style:"tighten",vocab:"ExampleName",target:"general",judge:"local",engine:"local",local_model:"qwen2.5:7b",engine_local_model:"",judge_local_model:"",cloud_enabled:false,learn:true};
 mock._settings.judge_model="claude-haiku-5-5";
 mock._settings.live_preview=true;
 mock.get_settings=async()=>({...mock._settings});mock.set_setting=async(k,v)=>{mock._settings[k]=v;return true;};
@@ -55,7 +60,7 @@ mock.set_text=async(text,id)=>{
   return true;
 };
 mock.set_composer=async(text,id)=>{if(id!==mock._lab.draft_id)return false;mock._lab.composer=text;return true;};
-mock.get_local_models=async()=>({models:["qwen2.5:7b"],selected:mock._settings.local_model,error:""});
+mock.get_local_models=async()=>({models:["qwen2.5:7b","qwen3.5:2b","qwen3.5:4b"],selected:mock._settings.local_model,error:""});
 mock.list_drafts=async()=>mock._archives.map(r=>({id:r.draft_id,title:r.text.slice(0,50)||"Empty draft"}));
 mock.new_draft=async()=>{mock._archives.push(structuredClone(mock._lab));Object.assign(mock._lab,{draft_id:"demo-"+Date.now(),workspace_id:"demo-"+Date.now(),text:"",composer:"",pending:null,revs:[],cur:-1,score:null});mock._s.lab_ver++;return true;};
 mock.restore_draft=async id=>{const i=mock._archives.findIndex(r=>r.draft_id===id);if(i<0)return false;const next=mock._archives.splice(i,1)[0];mock._archives.push(structuredClone(mock._lab));mock._lab=next;mock._s.lab_ver++;return true;};
@@ -357,18 +362,57 @@ function drawBars(levels) {
 }
 
 // ---------- chips ----------
-function chip(key, label, icon) {
+let promptModelNames = [], promptInventoryChecked = false;
+function promptLocalChoices(key) {
+  const selected = settings[key] || "";
+  const fallback = settings.local_model ? `Use cleanup model (${settings.local_model})` : "Use cleanup model";
+  const option = (model, label, unavailable = false) => `<option value="${esc(model)}"${selected === model ? " selected" : ""}${unavailable ? " disabled" : ""}>${esc(label)}</option>`;
+  const missing = selected && !promptModelNames.includes(selected);
+  return option("", fallback) + (missing
+    ? option(selected, selected + (promptInventoryChecked ? " (saved; not installed)" : " (saved; list unavailable)"), true) : "")
+    + promptModelNames.map(model => option(model, model)).join("");
+}
+function rememberPromptModels(data) {
+  const names = [...new Set((data.models || []).filter(name => typeof name === "string" && name))];
+  const checked = data.available === true || (data.available !== false && !data.error);
+  if (JSON.stringify(names) === JSON.stringify(promptModelNames) && checked === promptInventoryChecked) return;
+  promptModelNames = names;
+  promptInventoryChecked = checked;
+  renderChips();
+}
+function promptRouteSummary(stage) {
+  const selected = settings[stage];
+  if (!selected || selected === "local") {
+    const choice = settings[stage + "_local_model"];
+    if (choice && promptInventoryChecked && !promptModelNames.includes(choice)) return `${choice} is saved but isn’t installed. Choose another model or start Ollama and refresh.`;
+    return `Uses ${choice || settings.local_model || "your cleanup model"} on this computer.`;
+  }
+  const provider = options.prompt_providers?.[selected];
+  const name = provider?.name || Object.entries(options[stage] || {}).find(([, value]) => value === selected)?.[0] || "Cloud provider";
+  if (!settings.cloud_enabled) return `${name} selected. Paid cloud is off.${selected === "anthropic" ? " This step uses a local model." : ""}`;
+  if (provider && !provider.configured) return `${name} API key missing. Set ${provider.key_env} on this PC.`;
+  return `${name}${provider?.model ? " · " + provider.model : ""}. Paid cloud. Text is sent when you ask for this step.`;
+}
+function chip(key, label, icon, customChoices) {
   const opts = options[key] || {};
-  return `<label class="chip"><svg class="ico" aria-hidden="true"><use href="#${icon}"/></svg><span class="k">${label}</span><select data-key="${key}">${Object.entries(opts).map(([n, v]) => `<option value="${esc(v)}"${settings[key] === v ? " selected" : ""}>${esc(n)}</option>`).join("")}</select></label>`;
+  const choices = customChoices ?? Object.entries(opts).map(([n, v]) => `<option value="${esc(v)}"${settings[key] === v ? " selected" : ""}>${esc(n)}</option>`).join("");
+  return `<label class="chip"><svg class="ico" aria-hidden="true"><use href="#${icon}"/></svg><span class="k">${label}</span><select data-key="${key}">${choices}</select></label>`;
 }
 function renderChips() {
   const a = document.activeElement, box = a?.closest?.(".chips")?.id;
   const sel = a?.dataset?.key ? `[data-key="${a.dataset.key}"]` : "";
-  const cloudSelected = settings.engine === "anthropic" || settings.judge === "anthropic";
-  const cloudActive = cloudSelected && settings.cloud_enabled;
-  const processing = cloudActive ? "Cloud API processing · paid calls"
-    : cloudSelected ? "Local processing · cloud use is disabled" : "Local processing · stays on this computer";
-  stableHTML($("#chips-lab"), `<span class="processing-label">${processing}</span>` + chip("target", "Target", "i-clipboard") + chip("engine", "Engineer", "i-sparkle") + chip("judge", "Judge with", "i-chart") + (settings.judge === "anthropic" ? chip("judge_model", "Cloud judge", "i-chart") : ""));
+  const selected = [settings.engine, settings.judge].filter(value => value && value !== "local");
+  const cloudSelected = selected.length > 0, cloudActive = cloudSelected && settings.cloud_enabled;
+  const missingKey = cloudActive && selected.some(route => options.prompt_providers?.[route]?.configured === false);
+  const processing = cloudActive ? (missingKey ? "Cloud API key needed" : "Cloud API processing · paid calls")
+    : cloudSelected ? "Paid cloud is off" : "Local processing · stays on this computer";
+  stableHTML($("#chips-lab"), `<span class="processing-label">${processing}</span>`
+    + chip("target", "Target", "i-clipboard") + chip("engine", "Write", "i-sparkle")
+    + (settings.engine === "local" ? chip("engine_local_model", "Writing model", "i-sparkle", promptLocalChoices("engine_local_model")) : "")
+    + chip("judge", "Check", "i-chart")
+    + (settings.judge === "local" ? chip("judge_local_model", "Checking model", "i-chart", promptLocalChoices("judge_local_model"))
+      : settings.judge === "anthropic" ? chip("judge_model", "Claude judge", "i-chart") : "")
+    + `<div class="muted">Write · ${esc(promptRouteSummary("engine"))}<br>Check · ${esc(promptRouteSummary("judge"))}</div>`);
   $$(".chip select").forEach(s => s.onchange = () => setSetting(s.dataset.key, s.value));
   const name = k => Object.entries(options[k] || {}).find(([, v]) => v === settings[k])?.[0] || settings[k];
   const hotkeyName = String(name("hotkey") || "Right Ctrl");
@@ -378,13 +422,14 @@ function renderChips() {
   stableHTML(keyGroup, keys.map((key, i) => `<span class="hotkey-part">${i ? "<span>+</span>" : ""}<kbd>${esc(key)}</kbd></span>`).join(""));
   $("#btn-hotkey-card").setAttribute("aria-label", "Change dictation hotkey, " + hotkeyName);
   $("#composer-key").textContent = name("hotkey");
-  $("#lab-model-label").textContent = cloudActive ? "Cloud API" : cloudSelected ? "Cloud disabled" : "Local model";
-  $("#rail-processing").textContent = cloudActive ? "Cloud API enabled" : "Local processing";
+  $("#lab-model-label").textContent = cloudActive ? (missingKey ? "API key needed" : "Cloud API") : cloudSelected ? "Cloud disabled" : "Local model";
+  $("#rail-processing").textContent = cloudActive ? (missingKey ? "API key needed" : "Cloud API enabled") : cloudSelected ? "Cloud off" : "Local processing";
   if (box && sel) $(`#${box} ${sel}`)?.focus(); // the chip row is rebuilt when a value changes; keep keyboard focus on the same control
 }
 async function setSetting(k, v) {
   if (k === "cloud_enabled" && v && !await askConfirm("Enable cloud processing? Prompt Lab and voice-triggered prompt engineering text, instructions and relevant preferences will be sent to the configured API provider. Improve can make multiple paid calls. Estimates are not your bill.")) return;
   const value = k === "microphone" && v === "" ? null : v;
+  const promptModelChange = k === "engine_local_model" || k === "judge_local_model";
   const speechChange = k === "speech_model", speechControl = speechChange ? $("#speech-model") : null;
   if(speechChange) {
     if(speechModelSavePending)return;
@@ -401,7 +446,7 @@ async function setSetting(k, v) {
   try {
     try {
       const saved = await api().set_setting(k, value);
-      if (!saved) toast(speechChange ? "Speech model change did not complete. Check the selected model and speech status; finish any current recording or task before trying again." : k === "local_model" ? "Model choice could not be saved. Refresh the list and choose an available Ollama model." : "Setting could not be changed. Stop recording or reconnect the selected microphone.", true);
+      if (!saved) toast(speechChange ? "Speech model change did not complete. Check the selected model and speech status; finish any current recording or task before trying again." : k === "local_model" ? "Model choice could not be saved. Refresh the list and choose an available Ollama model." : promptModelChange ? "That Ollama model could not be selected. Refresh the local models and try again." : "Setting could not be changed. Stop recording or reconnect the selected microphone.", true);
       if(k === "local_model") { modelChoiceUnconfirmed = false; if(saved) settings.local_model = value; }
     } catch (e) { toast(speechChange ? "Speech model change was not confirmed. Check the selected model and speech status before continuing." : k === "local_model" ? "Model choice was not confirmed. Refresh the list to check your saved choice." : previewChange?"Preview setting was not confirmed. Check Settings before continuing.":"Setting could not be saved. Your previous choice is preserved.", true); }
     const latest=await api().get_settings();
@@ -431,9 +476,11 @@ const SETTING_ROWS = [
   ["microphone", "Microphone", "Choose a microphone for your next recording. Listen remembers it."],
   ["live_preview", "Live transcript preview", "See words on this computer. Updates may pause, and final words can change.", "toggle"],
   ["cleanup", "AI clean-up", "Tidy grammar and remove filler words using AI on this computer.", "toggle"], ["style", "How much to tidy", "Choose how much Listen changes the wording."],
-  ["local_model", "AI text model (Ollama)", "Tidies your words on this computer. It also writes and checks Prompt Lab prompts when you choose local AI. Speech uses a separate AI.", "model"],
+  ["local_model", "AI text model (Ollama)", "Tidies your words on this computer. Each Prompt Lab step can use this model or choose another installed model. Speech uses a separate AI.", "model"],
   ["target", "Prompt for", "Choose the app this prompt is for."], ["engine", "Writing AI", "Choose the AI that writes and improves your prompts."],
   ["judge", "Checking AI", "Scores your prompt, then writes a better version."],
+  ["engine_local_model", "Local model for writing", "", "prompt-model"],
+  ["judge_local_model", "Local model for checking", "", "prompt-model"],
   ["judge_model", "Claude AI for checking", "Haiku costs less. Sonnet balances cost and detail. Opus costs more. Used only with Claude when paid cloud is on."],
   ["cloud_enabled", "Allow paid cloud AI", "Prompts you write or speak, your instructions, and useful preferences can be sent to your chosen online AI. One request can use paid AI more than once. Everyday dictation cleanup runs on this computer.", "toggle"],
 ];
@@ -483,6 +530,7 @@ function renderSettings() {
     return t === "toggle" ? `<button class="switch ${settings[k] ? "on" : ""}" data-toggle="${k}" role="switch" aria-checked="${!!settings[k]}" aria-label="${l}">${swHTML(!!settings[k])}</button>`
       : t === "speech" ? `<select id="speech-model" data-key="speech_model" data-available="${speechChoices().available}" aria-label="${l}" aria-describedby="speech-stage-summary speech-model-note speech-model-status"${speechChoices().available&&!speechModelSavePending?"":" disabled"}>${speechChoices().html}</select>`
       : t === "model" ? `<select id="local-model" aria-label="${l}" aria-describedby="model-status"></select><button class="btn quiet" id="refresh-models">Refresh list</button>`
+      : t === "prompt-model" ? `<select data-key="${k}" aria-label="${l}">${promptLocalChoices(k)}</select>`
       : `<select data-key="${k}" aria-label="${l}">${Object.entries(options[k] || {}).map(([n, v]) => `<option value="${esc(v)}"${settings[k] === v ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
   };
   const row = k => `<div class="setting"><div><div class="l">${rows.get(k)[1]}</div><div class="d">${rows.get(k)[2]}</div></div><div class="setting-controls">${control(k)}</div></div>`;
@@ -500,8 +548,9 @@ function renderSettings() {
     <details class="settings-disclosure" id="prompt-settings">
       <summary><span>Prompt Lab &amp; cloud</span><small>Local runs here. Paid cloud uses online AI and can cost money.</small></summary>
       <div class="settings-disclosure-body">
-        <section class="stage-row" aria-labelledby="stage-writing"><div><h2 id="stage-writing">Write prompts</h2></div><div class="stage-choice">${control("engine")}<p>${esc(rows.get("engine")[2])}</p><p data-route-summary="engine"></p></div></section>
-        <section class="stage-row" aria-labelledby="stage-review"><div><h2 id="stage-review">Check prompts</h2></div><div class="stage-choice"><div class="setting-controls">${control("judge")}${control("judge_model")}</div><p>${esc(rows.get("judge")[2])}</p><p data-route-summary="judge"></p><p id="cloud-judge-help">${esc(rows.get("judge_model")[2])}</p></div></section>
+        <section class="stage-row" aria-labelledby="stage-writing"><div><h2 id="stage-writing">Write prompts</h2></div><div class="stage-choice"><div class="setting-controls">${control("engine")}${control("engine_local_model")}</div><p>${esc(rows.get("engine")[2])}</p><p data-route-summary="engine" role="status"></p></div></section>
+        <section class="stage-row" aria-labelledby="stage-review"><div><h2 id="stage-review">Check prompts</h2></div><div class="stage-choice"><div class="setting-controls">${control("judge")}${control("judge_local_model")}${control("judge_model")}</div><p>${esc(rows.get("judge")[2])}</p><p data-route-summary="judge" role="status"></p><p id="cloud-judge-help">${esc(rows.get("judge_model")[2])}</p></div></section>
+        <button class="btn quiet" id="refresh-prompt-models">Refresh local models</button>
         ${["target", "cloud_enabled"].map(row).join("")}
       </div>
     </details>`;
@@ -514,7 +563,7 @@ function renderSettings() {
       $('#settings-grid select[data-key="microphone"]')?.focus();
     }
   };
-  $("#refresh-models").onclick = refreshModels; refreshModels();
+  $("#refresh-models").onclick = $("#refresh-prompt-models").onclick = refreshModels; refreshModels();
   const benchmarkDisclosure=$(".model-benchmarks");
   benchmarkDisclosure.ontoggle=()=>{if(benchmarkDisclosure.open)benchmarkDisclosure.scrollIntoView({block:"nearest"});};
   if(api().get_options) {
@@ -540,10 +589,19 @@ function syncSettings() {
   $$("#settings-grid select[data-key]").forEach(s => { const v = String(settings[s.dataset.key] ?? ""); if (s.value !== v && [...s.options].some(o => o.value === v)) s.value = v; });
   $$("#settings-grid .switch").forEach(b => setSwitch(b, !!settings[b.dataset.toggle]));
   const m = $("#local-model"); if (m && settings.local_model && [...m.options].some(o => o.value === settings.local_model)) m.value = settings.local_model;
-  $$('[data-route-summary]').forEach(el => {
-    const key = el.dataset.routeSummary, local = settings[key] !== "anthropic";
-    el.textContent = local ? `Uses ${settings.local_model || "your text AI"} on this computer.` : settings.cloud_enabled ? "Paid cloud is on. Text goes to Claude only when you ask." : "Claude is selected, but paid cloud is off.";
+  $$("#settings-grid [data-route-summary]").forEach(el => {
+    const stage = el.dataset.routeSummary;
+    const key = stage + "_local_model";
+    const local = $('#settings-grid select[data-key="' + key + '"]');
+    if (local) {
+      local.hidden = settings[stage] !== "local";
+      stableHTML(local, promptLocalChoices(key));
+      local.value = settings[key] || "";
+    }
+    el.textContent = promptRouteSummary(stage);
   });
+  const refresh = $("#refresh-prompt-models");
+  if (refresh) refresh.hidden = settings.engine !== "local" && settings.judge !== "local";
   const cloudJudge = $('#settings-grid select[data-key="judge_model"]');
   if (cloudJudge) cloudJudge.hidden = settings.judge !== "anthropic";
   $('#cloud-judge-help')?.classList.toggle('hidden',settings.judge!=="anthropic");
@@ -563,6 +621,7 @@ async function refreshModels() {
     const selected = data.selected || settings.local_model || "";
     if (data.selected) { settings.local_model = data.selected; modelChoiceUnconfirmed = false; }
     const names = [...new Set((data.models || []).filter(n => typeof n === "string" && n))];
+    rememberPromptModels(data);
     const benchmark = globalThis.LISTEN_MODEL_BENCHMARKS;
     const tested = (benchmark?.models || []).filter(row=>names.includes(row.model)&&Number.isFinite(row.passed)&&Number.isFinite(row.cases)&&row.cases>0&&row.passed>=0&&row.passed<=row.cases&&Number.isFinite(row.medianSeconds)&&row.medianSeconds>=0).sort((a,b)=>b.passed/b.cases-a.passed/a.cases||a.medianSeconds-b.medianSeconds);
     const ranking = new Map(tested.map((row,index)=>[row.model,{...row,rank:index+1}]));
@@ -593,6 +652,8 @@ async function refreshModels() {
     syncSettings();
   } catch {
     if (!current()) return;
+    rememberPromptModels({models:[],available:false});
+    syncSettings();
     const saved = new Option((settings.local_model || "No saved model") + (modelChoiceUnconfirmed ? " (last known; save not confirmed)" : " (saved; availability not checked)"), settings.local_model || "", true, true);
     saved.disabled = true; select.replaceChildren(saved);
     status.textContent = modelChoiceUnconfirmed ? "Model list unavailable. The last save was not confirmed; reconnect and refresh to check your choice." : "Model list unavailable. Your saved selection is preserved; start Ollama and try Refresh.";
@@ -812,7 +873,9 @@ async function loadLab(checkOnly = false) {
   renderCandidate(); loadArchives();
   ed.classList.toggle("busy", !!lab.busy);
   // meta line
-  $("#lab-cost").textContent = lab.session_cost ? `Estimated session $${lab.session_cost.toFixed(3)}` : "";
+  const estimate = lab.session_cost ? `Estimated session $${lab.session_cost.toFixed(3)}` : "";
+  const unpriced = lab.session_unpriced ? `${lab.session_unpriced} unpriced API attempt${lab.session_unpriced === 1 ? "" : "s"}` : "";
+  setDisplayedProperty($("#lab-cost"), "textContent", [estimate, unpriced].filter(Boolean).join(" · "));
   $("#draft-version").textContent = lab.cur >= 0 ? `v${lab.cur + 1}` : "";
   $("#btn-revisions").classList.toggle("hidden", !lab.revs.length);
   $("#draft-meta").innerHTML = lab.revs.length
@@ -1591,6 +1654,13 @@ metricArea.addEventListener("focusout", event => {
 document.addEventListener("keydown", event => {
   if (event.key !== "Escape" || page !== "history") return;
   for (const card of metricArea.querySelectorAll(".stat:hover, .stat:focus")) card.dataset.tipDismissed = "true";
+});
+$("#lab-models").addEventListener("toggle", async event => {
+  if (event.newState !== "open") return;
+  try {
+    const data = await api().get_local_models();
+    if (page === "lab") rememberPromptModels(data);
+  } catch { if (page === "lab") rememberPromptModels({models:[],available:false}); }
 });
 window.addEventListener("pywebviewready",()=>{bridgeReady=true;boot();},{once:true});
 if(demo || bridgeReady)boot();else connection("Connecting to desktop app…");
