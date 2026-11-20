@@ -17,10 +17,14 @@ MODEL_SHA256 = '4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795
 REVISION = '7e948f21b7bdbac698d3318db9d350f1096f3b6c'
 
 
-def cached_model():
-    path = (Path.home() / '.cache/huggingface/hub' /
+def model_path():
+    return (Path.home() / '.cache/huggingface/hub' /
             'models--handy-computer--parakeet-unified-en-0.6b-gguf' /
             'snapshots' / REVISION / 'parakeet-unified-en-0.6b-Q8_0.gguf')
+
+
+def cached_model():
+    path = model_path()
     try:
         with path.open('rb') as source:
             digest = hashlib.file_digest(source, 'sha256').hexdigest()
@@ -54,7 +58,9 @@ class ParakeetRuntime:
         try:
             if snapshot != cached_model():
                 raise SpeechUnavailableError('cache_invalid')
-            base = Path.home() / 'AppData/Local/Listen/runtimes/transcribe-0.4.2-cpu-vulkan'
+            base = Path(__file__).with_name('speech-runtime')
+            if not base.is_dir():
+                base = Path.home() / 'AppData/Local/Listen/runtimes/transcribe-0.4.2-cpu-vulkan'
             if not (base / 'transcribe.dll').is_file():
                 raise SpeechUnavailableError('cache_unavailable')
             self._dll_cookie = os.add_dll_directory(str(base))

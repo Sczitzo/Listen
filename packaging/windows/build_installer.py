@@ -3,11 +3,14 @@
 import argparse
 import ctypes as c
 from ctypes import wintypes as w
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import uuid
+
+from bundle_runtime import stage_runtime
 
 
 def run(*arguments):
@@ -91,11 +94,11 @@ def payload(repo, revision, staging):
     selected = [name for name in names if
                 ('/' not in name and name.endswith('.py')) or name.startswith('ui/') or
                 name in {'launch_listen.pyw', 'requirements.txt', 'LICENSE', 'README.md'}]
+    selected.append('packaging/windows/packaged_setup.py')
     for name in selected:
-        destination = staging / name
+        destination = staging / (Path(name).name if name.startswith('packaging/') else name)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(git(repo, 'show', f'{revision}:{name}'))
-    return sorted(selected)
 
 
 def build(repo, revision, version, output):
@@ -106,20 +109,30 @@ def build(repo, revision, version, output):
         assert folder.parent == output.parent.resolve()
         staging = folder / 'files'
         staging.mkdir()
-        names = payload(repo, revision, staging)
+        payload(repo, revision, staging)
+        lock = folder / 'requirements.lock'
+        lock.write_bytes(git(repo, 'show', f'{revision}:packaging/windows/requirements.lock'))
+        stage_runtime(staging, folder, output.parent, lock, staging / 'requirements.txt')
+        names = sorted(path.relative_to(staging).as_posix() for path in staging.rglob('*') if path.is_file())
+        names = [name for name in names if not name.startswith('python/Lib/site-packages/bin/')]
         run(str(compiler), '/nologo', '/target:winexe', '/platform:x64',
             '/reference:System.Windows.Forms.dll', f'/win32icon:{staging / "ui/app.ico"}',
             f'/out:{staging / "Listen.exe"}', str(packaging / 'ListenLauncher.cs'))
         names.append('Listen.exe')
-        directories = {'': 'INSTALLDIR', 'ui': 'ListenUi'}
-        if any(Path(name).parent.as_posix() not in {'.', 'ui'} for name in names):
-            raise ValueError('Unexpected directory in install payload')
+        directories = {Path('.'): 'INSTALLDIR', Path('ui'): 'ListenUi'}
+        for name in names:
+            for parent in reversed(Path(name).parents):
+                if parent not in directories:
+                    directories[parent] = 'D' + uuid.uuid5(uuid.NAMESPACE_URL, parent.as_posix()).hex
         files, cabinet = [], []
         for sequence, name in enumerate(names, 1):
             path = staging / name
             key = f'F{sequence:04}'
+            # Some upstream tar members have a Unix epoch timestamp. CAB uses DOS dates.
+            if path.stat().st_mtime < 315619200:
+                os.utime(path, (315619200, 315619200))
             short = key + path.suffix[:4]
-            directory = directories[Path(name).parent.as_posix().replace('.', '')]
+            directory = directories[Path(name).parent]
             files.append((key, directory, short + '|' + path.name, path.stat().st_size, '', '', 512, sequence))
             cabinet.append(f'"{path}" {key}')
         cabinet_path = folder / 'listen.cab'
@@ -136,13 +149,16 @@ def build(repo, revision, version, output):
         try:
             properties = {'ProductCode': installer_id('product-' + version), 'UpgradeCode': installer_id('upgrade'),
                           'ProductVersion': version, 'ProductLanguage': 1033, 'ProductName': 'Listen', 'Manufacturer': 'Sczitzo',
-                          'ARPURLINFOABOUT': 'https://github.com/Sczitzo/Listen', 'ARPNOMODIFY': 1}
+                          'ARPURLINFOABOUT': 'https://github.com/Sczitzo/Listen', 'ARPNOMODIFY': 1,
+                          'SecureCustomProperties': 'LISTENOLDER;LISTENNEWER'}
             table('Property', 'Property Value', 's72 l0', 'Property', list(properties.items()))
             table('Directory', 'Directory Directory_Parent DefaultDir', 's72 S72 l255', 'Directory', [
                 ('TARGETDIR', '', 'SourceDir'), ('LocalAppDataFolder', 'TARGETDIR', '.'),
                 ('ListenPrograms', 'LocalAppDataFolder', 'Programs'), ('INSTALLDIR', 'ListenPrograms', 'Listen'),
-                ('ListenUi', 'INSTALLDIR', 'ui'), ('ProgramMenuFolder', 'TARGETDIR', '.'),
+                ('ProgramMenuFolder', 'TARGETDIR', '.'),
                 ('LISTENMENUDIR', 'ProgramMenuFolder', '.'),
+                *((identifier, directories[path.parent], path.name)
+                  for path, identifier in directories.items() if path != Path('.')),
             ])
             components = [*directories.values(), 'ListenMenu']
             table('Component', 'Component ComponentId Directory_ Attributes Condition KeyPath', 's72 S38 s72 i2 S255 S72', 'Component',
@@ -159,6 +175,14 @@ def build(repo, revision, version, output):
             ])
             table('Signature', 'Signature FileName MinVersion MaxVersion MinSize MaxSize MinDate MaxDate Languages',
                   's72 s255 S20 S20 I4 I4 I4 I4 S255', 'Signature', [])
+            table('Upgrade', 'UpgradeCode VersionMin VersionMax Language Attributes Remove ActionProperty',
+                  's38 S20 S20 S255 i4 S255 s72', 'UpgradeCode VersionMin VersionMax Language Attributes', [
+                      (properties['UpgradeCode'], '', version, '', 0, '', 'LISTENOLDER'),
+                      (properties['UpgradeCode'], version, '', '', 2, '', 'LISTENNEWER'),
+                  ])
+            table('LaunchCondition', 'Condition Description', 's255 l255', 'Condition', [
+                ('Installed OR NOT LISTENNEWER', 'A newer version of Listen is already installed.'),
+            ])
             table('Feature', 'Feature Feature_Parent Title Description Display Level Directory_ Attributes', 's38 S38 L64 L255 I2 i2 S72 i2', 'Feature',
                   [('App', '', 'Listen', 'Windows dictation', 1, 1, 'INSTALLDIR', 0)])
             table('FeatureComponents', 'Feature_ Component_', 's38 s72', 'Feature_ Component_', [('App', key) for key in components])
@@ -168,14 +192,16 @@ def build(repo, revision, version, output):
             table('Shortcut', 'Shortcut Directory_ Name Component_ Target Arguments Description Hotkey Icon_ IconIndex ShowCmd WkDir',
                   's72 s72 l128 s72 s72 S255 L255 I2 S72 I2 I2 S72', 'Shortcut',
                   [('ListenShortcut', 'LISTENMENUDIR', 'Listen', 'ListenMenu', f'[#{files[-1][0]}]', '', 'Windows local dictation', '', '', '', 1, 'INSTALLDIR')])
-            actions = [('AppSearch', 400), ('CostInitialize', 800), ('FileCost', 900), ('CostFinalize', 1000), ('InstallValidate', 1400),
-                       ('InstallInitialize', 1500), ('ProcessComponents', 1600), ('UnpublishFeatures', 1800),
+            actions = [('FindRelatedProducts', 25), ('AppSearch', 400), ('LaunchConditions', 500),
+                       ('CostInitialize', 800), ('FileCost', 900), ('CostFinalize', 1000), ('InstallValidate', 1400),
+                       ('InstallInitialize', 1500), ('RemoveExistingProducts', 1550),
+                       ('ProcessComponents', 1600), ('UnpublishFeatures', 1800),
                        ('RemoveShortcuts', 3200), ('RemoveRegistryValues', 3300), ('RemoveFiles', 3500),
                        ('InstallFiles', 4000), ('CreateShortcuts', 4500), ('WriteRegistryValues', 5000),
                        ('RegisterUser', 6000), ('RegisterProduct', 6100), ('PublishFeatures', 6300),
                        ('PublishProduct', 6400), ('InstallFinalize', 6600)]
             table('InstallExecuteSequence', 'Action Condition Sequence', 's72 S255 I2', 'Action',
-                  [(action, 'Installed' if action == 'AppSearch' else '', sequence) for action, sequence in actions])
+                  [(action, 'Installed OR LISTENOLDER' if action == 'AppSearch' else '', sequence) for action, sequence in actions])
             db.stream('listen.cab', cabinet_path)
             db.finish()
         finally:
@@ -187,7 +213,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--revision', required=True)
-    parser.add_argument('--version', default='26.11.20', help='Windows Installer version (major.minor.build)')
+    parser.add_argument('--version', default='26.11.21', help='Windows Installer version (major.minor.build)')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     build(args.repo.resolve(), args.revision, args.version, args.output.resolve())

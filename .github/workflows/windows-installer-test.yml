@@ -1,0 +1,39 @@
+name: Test Listen installer on Windows
+
+on:
+  push:
+    branches: [codex/self-setup-installer]
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'installer'
+          New-Item -ItemType Directory -Path $out | Out-Null
+          py -3.13 -B packaging/windows/build_installer.py --repo . --revision HEAD --output "$out/Listen-Windows-x64.msi"
+          Get-FileHash "$out/Listen-Windows-x64.msi" -Algorithm SHA256
+      - name: Install and transcribe in an empty Windows profile
+        shell: pwsh
+        run: |
+          $candidate = Join-Path $env:RUNNER_TEMP 'installer/Listen-Windows-x64.msi'
+          & ./packaging/windows/test_installer.ps1 -Installer $candidate -Work (Join-Path $env:RUNNER_TEMP 'Listen clean test') -RunDesktop
+      - name: Verify upgrade from the published installer
+        shell: pwsh
+        run: |
+          $candidate = Join-Path $env:RUNNER_TEMP 'installer/Listen-Windows-x64.msi'
+          $older = Join-Path $env:RUNNER_TEMP 'installer/Listen-previous.msi'
+          Invoke-WebRequest 'https://github.com/Sczitzo/Listen/releases/download/v2026.11.20/Listen-Windows-x64.msi' -OutFile $older
+          if ((Get-FileHash $older -Algorithm SHA256).Hash -ne 'A31B32AFE616F6D0D56676011638556B588F6B181223C280A1E07FF613A33D3E') {
+              throw 'The published installer does not match the upgrade fixture.'
+          }
+          & ./packaging/windows/test_installer.ps1 -Installer $candidate -LegacyInstaller $older -Work (Join-Path $env:RUNNER_TEMP 'Listen upgrade test')
