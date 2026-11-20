@@ -2278,7 +2278,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261119-listen19-in-place-hotkey"
+UI_VERSION = "20261119-listen19-score-trends"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -2433,6 +2433,48 @@ def pill_thread(tray):
         tick = card = root = None
         import gc
         gc.collect()
+
+
+def _history_metric_trends(rows, now, current):
+    """Calculate prior periods from saved dictations, without treating missing history as zero."""
+    day_span = datetime.timedelta(days=1)
+    week_span = datetime.timedelta(days=7)
+    tick = datetime.timedelta(microseconds=1)
+    earliest = None
+    daily = [0] * 6
+    weekly = [[0, 0, 0, 0] for _ in range(3)]
+    for row in rows:
+        stamp = datetime.datetime.fromisoformat(row["ts"])
+        if stamp.tzinfo is not None:
+            stamp = stamp.astimezone().replace(tzinfo=None)
+        if stamp > now:
+            continue
+        earliest = stamp if earliest is None else min(earliest, stamp)
+        day_offset = (now.date() - stamp.date()).days
+        if 1 <= day_offset <= 6 and stamp.time() <= now.time():
+            daily[day_offset - 1] += 1
+        week_offset = (now - stamp - tick) // week_span
+        if 1 <= week_offset <= 3:
+            bucket = weekly[week_offset - 1]
+            bucket[0] += len(row["text"].split())
+            bucket[1] += row.get("secs", 0)
+            if row.get("latency"):
+                bucket[2] += row["latency"]
+                bucket[3] += 1
+
+    trend = {key: [] for key in ("today", "words_week", "wpm", "latency")}
+    for offset in range(6, 0, -1):
+        cutoff = now - day_span * offset
+        trend["today"].append(daily[offset - 1] if earliest and earliest <= cutoff.replace(hour=0, minute=0, second=0, microsecond=0) else None)
+    for offset in range(3, 0, -1):
+        words, secs, latency_sum, latency_count = weekly[offset - 1]
+        observed = earliest is not None and earliest <= now - week_span * (offset + 1)
+        trend["words_week"].append(words if observed else None)
+        trend["wpm"].append(round(words * 60 / secs) if observed and secs > 30 else None)
+        trend["latency"].append(latency_sum / latency_count if observed and latency_count else None)
+    for key, points in trend.items():
+        points.append(current[key] if key in ("today", "words_week") else current[key] or None)
+    return trend
 
 
 class Api(ExperienceApi):
@@ -2608,12 +2650,14 @@ class Api(ExperienceApi):
         except OSError:
             spend = {"amount": 0, "operations": 0, "unknown": 0}
             spend_note = "Accounting unavailable; no reliable total can be shown."
-        return {"today": sum(1 for r in dict_ if r["ts"].startswith(day)), "week": len(wk),
-                "words_week": words, "minutes_week": secs / 60,
-                "wpm": round(words / (secs / 60)) if secs > 30 else 0,
-                "latency": sum(lat) / len(lat) if lat else 0,
-                "spend_month": spend["amount"], "spend_unknown": spend["unknown"],
-                "spend_operations": spend["operations"], "spend_note": spend_note}
+        stats = {"today": sum(1 for r in dict_ if r["ts"].startswith(day)), "week": len(wk),
+                 "words_week": words, "minutes_week": secs / 60,
+                 "wpm": round(words / (secs / 60)) if secs > 30 else 0,
+                 "latency": sum(lat) / len(lat) if lat else 0,
+                 "spend_month": spend["amount"], "spend_unknown": spend["unknown"],
+                 "spend_operations": spend["operations"], "spend_note": spend_note}
+        stats["trends"] = _history_metric_trends(dict_, now, stats)
+        return stats
 
     # ---- prompt lab ----
     @_locked_lab

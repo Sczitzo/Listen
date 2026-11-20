@@ -12,6 +12,7 @@ script = r'''
 const fs=require('fs'),vm=require('vm'),assert=require('assert/strict');
 const src=fs.readFileSync(process.argv[1],'utf8');
 function cut(a,b){const i=src.indexOf(a),j=src.indexOf(b,i);assert(i>=0&&j>i,'source boundary missing: '+a);return src.slice(i,j);}
+const scoreHelpers=cut('const SCORE_LABELS =','function prevIdx(');
 function element(){const cls=new Set(),attrs={},events={};let text='',writes=0;return {
  value:'',disabled:false,readOnly:false,dataset:{},style:{},events,attrs,children:[],writes:()=>writes,
  get textContent(){return text},set textContent(v){writes++;text=v},
@@ -125,7 +126,7 @@ function saveContext(bridge){
  await check('Empty Instruction explains the available next step',async()=>{
   const R=registry();let submits=0;
   const c=vm.createContext({$:R,lab:{busy:false,pending:null},feedbackRequest:null,feedbackIssues:new Map(),composer:{value:'   ',focus(){this.focused=true}},composerVersion:0,editorContext:'a',setDisplayedProperty(e,k,v){e[k]=v},api:()=>({submit:async()=>submits++}),recovery(){},toast(){},flushAll:async()=>true});
-  vm.runInContext(cut('let sending=false;','$("#btn-send").onclick=send;'),c);await vm.runInContext('send()',c);
+  vm.runInContext(scoreHelpers+cut('let sending=false;','$("#btn-send").onclick=send;'),c);await vm.runInContext('send()',c);
   assert.equal(submits,0);assert(c.composer.focused,'empty input was silently ignored');assert.match(R('#lab-action-error').textContent,/instruction|describe/i);
  });
  await check('A waiting or stale suggestion blocks rewrites but allows Get feedback',async()=>{
@@ -134,7 +135,7 @@ function saveContext(bridge){
     page:'lab',editVersion:1,ed:{value:'Original draft'},feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,
    setDisplayedProperty(e,k,v){e[k]=v},api:()=>Object.fromEntries(['submit','improve','rebuild','feedback'].map(method=>[method,async()=>{calls.push(method);return true}])),
    recovery(){},toast(){},flushAll:async()=>true,loadLab:async()=>{c.feedbackRequest=null;return true;}});
-  vm.runInContext(cut('let sending=false;','$("#btn-send").onclick=send;')+cut('for(const [id,method] of [["improve"','let sending=false;'),c);
+  vm.runInContext(scoreHelpers+cut('let sending=false;','$("#btn-send").onclick=send;')+cut('for(const [id,method] of [["improve"','let sending=false;'),c);
   await vm.runInContext('send()',c);await R('#btn-improve').onclick();await R('#btn-rebuild').onclick();
   assert.deepEqual(calls,[],'a waiting suggestion started another rewrite');
   assert.match(R('#lab-action-error').textContent,/review.*(?:apply|discard)/i);
@@ -150,7 +151,7 @@ function saveContext(bridge){
    editorContext:'draft-a',editVersion:1,composerVersion:1,page:'lab',feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,
    composer:{value:''},setDisplayedProperty(e,k,v){if(e[k]!==v)e[k]=v},flushAll:async()=>true,
    api:()=>({feedback:()=>{calls++;return reply;}}),loadLab:async()=>{reads++;return true;},toast(){}});
-  vm.runInContext(cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
+  vm.runInContext(scoreHelpers+cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
   const request=R('#btn-score').onclick();
   await tick();
   assert.equal(calls,1);assert.match(R('#lab-busy').textContent,/Getting feedback/);
@@ -167,7 +168,7 @@ function saveContext(bridge){
    editorContext:1,editVersion:1,composerVersion:1,page:'lab',feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,
    composer:{value:''},setDisplayedProperty(e,k,v){e[k]=v},flushAll:async()=>true,loadLab:async()=>true,
    api:()=>({draft_pass:async()=>{if(++calls===1){await pending.promise;throw Error('lost reply')}return false;}})});
-  vm.runInContext(cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
+  vm.runInContext(scoreHelpers+cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
   const engineer=R('#btn-draft-pass').onclick,check=R('#btn-check-feedback').onclick;
   const request=engineer();await tick();assert.equal(calls,1);
   c.lab={busy:'engineering',cur:0,workspace_id:'work-b'};c.editorContext=2;c.ed.value='New draft';pending.resolve();await request;
@@ -186,7 +187,7 @@ function saveContext(bridge){
    editorContext:1,editVersion:1,composerVersion:1,page:'lab',feedbackRequest:null,feedbackIssues:new Map(),labClearVersion:0,
    composer:{value:'Preserve the titles'},setDisplayedProperty(e,k,v){e[k]=v},recovery(){},flushAll:async()=>true,
    api:()=>({submit:async()=>{if(++calls===1)throw Error('lost reply');return false;}}),loadLab:async()=>{reads++;return true;}});
-  vm.runInContext(cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
+  vm.runInContext(scoreHelpers+cut('function currentFeedbackIntent(','$("#btn-send").onclick=send;'),c);
   const send=()=>vm.runInContext('send()',c);
   await send();await send();assert.equal(calls,1,'Another suggestion was requested before checking');
   assert.equal(c.composer.value,'Preserve the titles');
@@ -208,7 +209,7 @@ function saveContext(bridge){
   const R=registry(),pending=deferred();let calls=0;
   const c=vm.createContext({$:R,lab:{busy:false,pending:null},ed:{value:'Original draft'},feedbackRequest:null,feedbackIssues:new Map(),composer:{value:'Keep this instruction'},composerVersion:1,editorContext:'a',
    setDisplayedProperty(e,k,v){e[k]=v},api:()=>({submit:async()=>{calls++;return true}}),recovery(){},toast(){},flushAll:()=>pending.promise,loadLab:async()=>true});
-  vm.runInContext(cut('let sending=false;','$("#btn-send").onclick=send;'),c);
+  vm.runInContext(scoreHelpers+cut('let sending=false;','$("#btn-send").onclick=send;'),c);
   const sending=vm.runInContext('send()',c);await tick();c.lab.pending={id:'arrived'};pending.resolve(true);await sending;
   assert.equal(calls,0,'save completion ignored the newly waiting suggestion');assert.equal(c.composer.value,'Keep this instruction');
  });

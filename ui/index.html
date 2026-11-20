@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Listen</title>
-  <link rel="stylesheet" href="app.css?v=20261119-listen19-in-place-hotkey">
+  <link rel="stylesheet" href="app.css?v=20261119-listen19-score-trends">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -112,7 +112,7 @@
       <fieldset class="editor-wrap frame lab-field" aria-labelledby="draft-label">
         <legend class="frame-title lab-field-title">
           <label for="draft" id="draft-label">Draft</label>
-          <span class="score-badge unscored" id="score-badge">Not scored</span>
+          <span class="score-badge" data-score-quality="none" id="score-badge">Not scored</span>
           <button class="btn quiet sm hidden" id="btn-revisions" popovertarget="lab-revisions"><span id="draft-version"></span><span class="sr-only"> · Draft revisions</span><svg class="ico down" aria-hidden="true"><use href="#i-chevron"/></svg></button>
         </legend>
         <div class="lab-popover" id="lab-revisions" popover>
@@ -289,6 +289,6 @@
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 </div>
 <script src="model-benchmarks.js?v=20261119-listen19"></script>
-<script src="app.js?v=20261119-listen19-in-place-hotkey"></script>
+<script src="app.js?v=20261119-listen19-score-trends"></script>
 </body>
 </html>

@@ -23,7 +23,8 @@ async function delayedSend(){
  const saves=src.slice(src.indexOf('async function saveEdit('),src.indexOf('window.requestDictationQuit'));
  const send=src.slice(src.indexOf('let sending=false;'),src.indexOf('$("#btn-send").onclick=send;'));
  const newHandler=src.split('\n').find(x=>x.startsWith('$("#btn-new").onclick='));
- vm.runInContext(saves+send+newHandler,c);
+ const scoreHelpers=src.slice(src.indexOf("const SCORE_LABELS ="),src.indexOf("function prevIdx("));
+ vm.runInContext(scoreHelpers+saves+send+newHandler,c);
  const pending=vm.runInContext('send()',c);await started;
  await vm.runInContext('send()',c); // Duplicate click while saving must be reserved.
  await controls['#btn-new'].onclick();release(true);await pending;

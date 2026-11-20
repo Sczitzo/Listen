@@ -19,7 +19,9 @@ const mock = {
     return {...OPTS,speech_models:models,speech_model:selected,speech_model_label:Object.entries(models).find(([,value])=>value===selected)?.[0]||selected,speech_model_note:"Simulated model choices. No installed cache is checked in this demo."};
   },
   get_history: async () => [{ ts: "2026-09-12T10:12:00", kind: "dictate", text: "Add a dark mode toggle to the settings page and remember the choice between launches.", raw: "um add a dark mode toggle", secs: 6.2, latency: 0.9, cost: 0 }, { ts: "2026-09-11T18:02:00", kind: "dictate", text: "Ship it before Friday and let QA know.", raw: "ship it uh before friday", secs: 3.1, latency: 0.7, cost: 0 }],
-  get_stats: async () => ({ today: 7, week: 41, words_week: 3120, minutes_week: 22.4, wpm: 139, latency: 0.8, spend_month: 0.42 }),
+  get_stats: async () => ({ today: 7, week: 41, words_week: 3120, minutes_week: 22.4, wpm: 139, latency: 0.8, spend_month: 0.42,
+    trends: {today:[3,4,5,2,6,5,7], words_week:[2410,2830,2900,3120],
+      wpm:[121,127,130,139], latency:[1.2,1.1,1,0.8]} }),
   get_lab: async () => mock._lab,
   _op: (busy, ms, then) => { mock._lab.busy = busy; mock._s.lab_ver++; setTimeout(() => { mock._lab.busy = ""; then && then(); mock._s.lab_ver++; }, ms); return true; },
   score: async () => mock._op("scoring", 800),
@@ -599,7 +601,8 @@ async function refreshModels() {
 async function renderLearned() {
   const L = await api().get_learned();
   setSwitch($("#learn-switch"), !!settings.learn);
-  $("#learned").innerHTML = L.lines.length ? L.lines.map(l => `<div>${esc(l)}</div>`).join("") : `<div class="none">Nothing learned yet. Keep a few prompts (Paste, Copy, or Save in the lab) and correct generated text by hand; patterns show up here.${L.kept ? ` ${L.kept} kept so far.` : ""}</div>`;
+  $("#learned").innerHTML = L.lines.length ? L.lines.map(line => `<div>${esc(line).replace(/\b([1-5](?:\.\d+)?)\/5\b/g, (ratio, score) =>
+    `<b ${scoreAttributes(Number(score), 5)}>${ratio}</b>`)}</div>`).join("") : `<div class="none">Nothing learned yet. Keep a few prompts (Paste, Copy, or Save in the lab) and correct generated text by hand; patterns show up here.${L.kept ? ` ${L.kept} kept so far.` : ""}</div>`;
   $("#learned-note").textContent = L.snippet && settings.learn ? "Added to the engineer prompt: " + L.snippet : "Built only from prompts you keep and corrections you make. Never changes code.";
 }
 $("#learn-switch").onclick = async () => { await setSetting("learn", !settings.learn); renderLearned(); };
@@ -690,6 +693,32 @@ function historyMetric(value, animate) {
   return rolling ? `<span class="sr-only">${exact}</span><span aria-hidden="true">${strips}</span>` : exact;
 }
 let historyRequest = 0, historyEntryPending = false, historyStatsKey;
+function historyTrend(key, series = []) {
+  const today = key === "today", seconds = key === "latency";
+  const unit = seconds ? " s" : key === "wpm" ? " wpm" : "";
+  const places = seconds ? 1 : 0;
+  const display = value => value.toLocaleString(undefined, {maximumFractionDigits:places, minimumFractionDigits:places});
+  const current = series.at(-1), previous = series.at(-2);
+  const observed = series.filter(Number.isFinite);
+  let comparison = "No earlier comparison";
+  if (Number.isFinite(current) && Number.isFinite(previous)) {
+    const delta = +(Number(current.toFixed(places)) - Number(previous.toFixed(places))).toFixed(places);
+    const direction = delta > 0 ? "↑ +" : delta < 0 ? "↓ −" : "";
+    const change = delta ? direction + display(Math.abs(delta)) + unit : "No change";
+    comparison = `<b>${change}</b> <span>${today ? "vs same time yesterday" : "vs previous 7 days"}</span>`;
+  }
+  let graph = '<p class="metric-range">Not enough history for a trend</p>';
+  if (observed.length >= 2 && Number.isFinite(current)) {
+    const upper = Math.max(...observed);
+    const bars = series.map(value => Number.isFinite(value)
+      ? `<i style="--metric-bar:${upper ? 100 * value / upper : 0}%"></i>`
+      : '<i class="metric-gap"></i>').join("");
+    graph = `<div class="metric-bars" aria-hidden="true">${bars}</div>
+      <p class="metric-range"><span>${today ? "Last 7 days" : "Last 4 weeks"}</span><b>${display(observed[0])} → ${display(current)}${unit}</b></p>`;
+  }
+  return `<div class="metric-tip" id="metric-tip-${key}" role="tooltip"><p class="metric-delta">${comparison}</p>${graph}</div>`;
+}
+
 async function loadHistory(entering = false) {
   historyEntryPending ||= entering;
   const request = ++historyRequest;
@@ -704,13 +733,13 @@ async function loadHistory(entering = false) {
   const animate = historyEntryPending && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   historyEntryPending = false;
   historyStatsKey = key;
-  const stat = (value, unit, label, detail = "") =>
-    `<div class="stat"><div class="l">${label}</div><div class="v"><span class="metric-digits">${historyMetric(value, animate)}</span>${unit ? `<small>${unit}</small>` : ""}</div><div class="s">${detail}</div></div>`;
+  const stat = (key, value, unit, label, detail = "") =>
+    `<div class="stat" id="history-metric-${key}" tabindex="0" aria-describedby="metric-tip-${key}"><div class="l">${label}</div><div class="v"><span class="metric-digits">${historyMetric(value, animate)}</span>${unit ? `<small>${unit}</small>` : ""}</div><div class="s">${detail}</div>${historyTrend(key, st.trends?.[key])}</div>`;
   const stats = $("#stats");
-  stats.innerHTML = stat(st.today, "today", "Dictations", `${st.week} this week`) +
-    stat(st.words_week.toLocaleString(), "words", "This week", `${st.minutes_week.toFixed(1)} min spoken`) +
-    stat(st.wpm || "–", "wpm", "Speaking speed") +
-    stat(st.latency ? st.latency.toFixed(1) : "–", st.latency ? "s" : "", "Processing", "Includes send attempt") +
+  stats.innerHTML = stat("today", st.today, "today", "Dictations", `${st.week} this week`) +
+    stat("words_week", st.words_week.toLocaleString(), "words", "This week", `${st.minutes_week.toFixed(1)} min spoken`) +
+    stat("wpm", st.wpm || "–", "wpm", "Speaking speed") +
+    stat("latency", st.latency ? st.latency.toFixed(1) : "–", st.latency ? "s" : "", "Processing", "Includes send attempt") +
     `<p class="stats-meta">$${st.spend_month.toFixed(2)} est. API this month${st.spend_unknown ? ` · ${st.spend_unknown} unpriced calls` : ""}${st.spend_note ? " · " + esc(st.spend_note) : ""}</p>`;
   if (animate) for (const strip of stats.querySelectorAll(".metric-strip")) {
     const reel = strip.animate([{transform:"none"}, {transform:"translateY(-80%)"}],
@@ -790,7 +819,7 @@ async function loadLab(checkOnly = false) {
     ? `v${lab.cur + 1} · ${esc(KIND[lab.revs[lab.cur]?.kind] || "")}${lab.by ? " by " + esc(lab.by) : ""}${lab.fav ? ` · favorite “${esc(lab.fav)}”` : ""}`
     : "Paste a prompt, type one, or dictate one here.";
   // revisions strip
-  stableHTML($("#revs"), lab.revs.map(r => `<button class="rev ${r.i === lab.cur ? "cur" : ""}" data-i="${Number(r.i)}"${r.i === lab.cur ? ' aria-current="true"' : ""} title="${esc(KIND[r.kind] || r.kind)}${r.by ? " by " + esc(r.by) : ""}">v${Number(r.i) + 1}${r.score != null ? ` <b>${Number(r.score)}</b>` : ""}${r.stale ? ' <span class="stale">edited</span>' : ""}</button>`).join(""));
+  stableHTML($("#revs"), lab.revs.map(r => `<button class="rev ${r.i === lab.cur ? "cur" : ""}" data-i="${Number(r.i)}"${r.i === lab.cur ? ' aria-current="true"' : ""} title="${esc(KIND[r.kind] || r.kind)}${r.by ? " by " + esc(r.by) : ""}">v${Number(r.i) + 1}${r.score != null ? ` <b ${scoreAttributes(r.score)}>${Number(r.score)}</b>` : ""}${r.stale ? ' <span class="stale">edited</span>' : ""}</button>`).join(""));
   $$("#revs .rev").forEach(b => b.onclick = async () => {
     if (!await flushAll()) return;
     editVersion++;
@@ -809,8 +838,13 @@ async function loadLab(checkOnly = false) {
   if (sc) {
     sb.classList.remove("hidden");
     const p = $("#score-prev");
-    if (lab.prev_score == null) { p.textContent = ""; p.className = "score-prev muted"; }
-    else { const d = sc.score - lab.prev_score; p.textContent = d === 0 ? `same as v${prevIdx() + 1}` : `${d > 0 ? "▲" : "▼"} ${Math.abs(d)} vs v${prevIdx() + 1} (${lab.prev_score})`; p.className = "score-prev " + (d > 0 ? "up" : d < 0 ? "down" : "muted"); }
+    if (lab.prev_score == null) { stableHTML(p, ""); p.className = "score-prev muted"; }
+    else {
+      const previous = lab.prev_score, delta = sc.score - previous, version = prevIdx() + 1;
+      stableHTML(p, delta === 0 ? `same as v${version}`
+        : `${delta > 0 ? "▲" : "▼"} ${Math.abs(delta)} vs v${version} (<b ${scoreAttributes(previous)}>${Number(previous)}</b>)`);
+      p.className = "score-prev " + (delta > 0 ? "up" : delta < 0 ? "down" : "muted");
+    }
     $("#score-gaps").textContent = `${sc.gaps.length} gap${sc.gaps.length === 1 ? "" : "s"} · ${sc.by}${sc.cost ? ` · $${sc.cost.toFixed(3)}` : ""}${sc.note ? " · " + sc.note : ""}`;
   } else sb.classList.add("hidden");
   // buttons
@@ -844,6 +878,22 @@ async function loadLab(checkOnly = false) {
   return checkOnly || !next.prepared_pass;
 }
 let lastLabErr = "";
+const SCORE_LABELS = {strong:"Strong", fair:"Fair", "needs-work":"Needs work", none:""};
+function scoreQuality(value, scale = 10) {
+  if (!Number.isFinite(value) || value < 0 || value > scale) return "none";
+  return value >= scale * .8 ? "strong" : value >= scale * .6 ? "fair" : "needs-work";
+}
+function scoreAttributes(value, scale = 10) {
+  const quality = scoreQuality(value, scale);
+  return `data-score-quality="${quality}" title="${SCORE_LABELS[quality]}"`;
+}
+function setScoreBadge(badge, value, label) {
+  const quality = scoreQuality(value);
+  setDisplayedProperty(badge.dataset, "scoreQuality", quality);
+  setDisplayedProperty(badge, "title", SCORE_LABELS[quality]);
+  setDisplayedProperty(badge, "textContent", label);
+}
+
 function prevIdx() { for (let i = lab.cur - 1; i >= 0; i--) if (lab.revs[i].score != null) return i; return -1; }
 async function saveEdit(text, context, version) {
   recovery("Saving locally…");
@@ -1055,8 +1105,7 @@ function renderLabActivity() {
   setDisplayedProperty(pass, "ariaDisabled", String(blocked || !ed.value.trim()));
   setDisplayedProperty(pass, "textContent", grade ? "Refine" : "Engineer");
   pass.classList.toggle("primary", !grade);
-  badge.classList.toggle("unscored", !grade);
-  setDisplayedProperty(badge, "textContent", grade ? `Score ${grade.score}/10` : "Not scored");
+  setScoreBadge(badge, grade?.score, grade ? `Score ${grade.score}/10` : "Not scored");
   copy.classList.toggle("hidden", !grade);
   setDisplayedProperty(copy, "ariaDisabled", String(locked));
   setDisplayedProperty($("#btn-send"), "ariaDisabled", String(blocked));
@@ -1160,8 +1209,9 @@ function renderReviewFeedback(versions, selected, draftLabel, hideDraftScore, ac
   const name = Number.isInteger(round) ? `Suggestion ${round + 1}` : draftLabel + (lab.stale ? " before edits" : "");
   const score = Number.isInteger(round) ? (selected.score || selected.basis_score) : draftScore;
   setDisplayedProperty($("#candidate-feedback-title"), "textContent", score ? "Feedback on " + name : "Feedback");
-  $("#candidate-score").classList.toggle("hidden", !score);
-  setDisplayedProperty($("#candidate-score"), "textContent", score ? `${score.score} / 10` : "");
+  const badge = $("#candidate-score");
+  badge.classList.toggle("hidden", !score);
+  setScoreBadge(badge, score?.score, score ? `${score.score} / 10` : "");
   stableHTML($("#candidate-gaps"), score
     ? score.gaps.map(gap => `<li>${esc(gap)}</li>`).join("") || "<li>No gaps found.</li>"
     : "<li>No feedback on this suggestion yet.</li>");
@@ -1170,19 +1220,19 @@ function renderReviewFeedback(versions, selected, draftLabel, hideDraftScore, ac
     setDisplayedProperty($("#candidate-assessment-meta"), "textContent",
       `${score.by}${score.cost ? ` · $${score.cost.toFixed(3)}` : ""}${score.note ? "\n" + score.note : ""}`);
     stableHTML($("#candidate-criteria"), Object.entries(score.criteria).map(([key, value]) =>
-      `<div><span>${esc(key.replaceAll("_", " "))}</span><b>${Number(value)}/5</b></div>`).join(""));
+      `<div><span>${esc(key.replaceAll("_", " "))}</span><b ${scoreAttributes(value, 5)}>${Number(value)}/5</b></div>`).join(""));
   }
   const rounds = $("#candidate-rounds"), focus = document.activeElement?.dataset.reviewRound;
   const earlier = lab.revs.filter(rev => !hideDraftScore && rev.i !== lab.cur && rev.score != null);
   $("#candidate-history").classList.toggle("hidden", !versions.length && !earlier.length);
   const button = (index, label, assessment, pressed) =>
-    `<button class="btn sm" data-review-round="${index}" aria-pressed="${pressed}"${actionLocked ? " disabled" : ""}>${label} · ${assessment ? Number(assessment.score) + "/10" : "Awaiting review"}</button>`;
+    `<button class="btn sm" data-review-round="${index}" aria-pressed="${pressed}"${actionLocked ? " disabled" : ""}>${label} · ${assessment ? `<b ${scoreAttributes(assessment.score)}>${Number(assessment.score)}/10</b>` : "Awaiting review"}</button>`;
   stableHTML(rounds, (draftScore ? button(-1, draftLabel, draftScore, showDraftFeedback || !selected) : "")
     + versions.map((version, i) => button(i, `Suggestion ${i + 1}`, version.score, !showDraftFeedback && i === reviewVersion)).join(""));
   if (focus !== undefined && !rounds.contains(document.activeElement)) {
     rounds.querySelector('[data-review-round="' + Number(focus) + '"]')?.focus({preventScroll: true});
   }
-  stableHTML($("#candidate-revision-scores"), earlier.map(rev => `<span>Draft v${rev.i + 1} · ${rev.score}/10${rev.stale ? " · edited" : ""}</span>`).join(""));
+  stableHTML($("#candidate-revision-scores"), earlier.map(rev => `<span>Draft v${rev.i + 1} · <b ${scoreAttributes(rev.score)}>${Number(rev.score)}/10</b>${rev.stale ? " · edited" : ""}</span>`).join(""));
 }
 function reviewError(message) {
   candidateError = message;
@@ -1529,6 +1579,19 @@ function setBannersOpen(open) {
   $("#banners-toggle").textContent = open ? "Hide" : "Details";
 }
 $("#banners-toggle").onclick = () => setBannersOpen(!$("#banners").classList.contains("open"));
+const metricArea = $("#stats");
+metricArea.addEventListener("pointerout", event => {
+  const card = event.target.closest(".stat");
+  if (card && !card.contains(event.relatedTarget)) delete card.dataset.tipDismissed;
+});
+metricArea.addEventListener("focusout", event => {
+  const card = event.target.closest(".stat");
+  if (card && !card.matches(":hover")) delete card.dataset.tipDismissed;
+});
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape" || page !== "history") return;
+  for (const card of metricArea.querySelectorAll(".stat:hover, .stat:focus")) card.dataset.tipDismissed = "true";
+});
 window.addEventListener("pywebviewready",()=>{bridgeReady=true;boot();},{once:true});
 if(demo || bridgeReady)boot();else connection("Connecting to desktop app…");
 })();

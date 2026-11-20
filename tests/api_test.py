@@ -47,6 +47,34 @@ with open(d.HISTORY, "w", encoding="utf-8") as f:
     for r in rows: f.write(json.dumps(r) + "\n")
 st = api.get_stats()
 assert st["today"] == 1 and st["week"] == 1 and st["words_week"] == 3 and st["wpm"] == 3 and st["latency"] == 0.8, st
+
+def check_history_trends(app):
+    from datetime import datetime, timedelta
+
+    now = datetime(2026, 11, 19, 12)
+    current = dict(today=3, words_week=60, wpm=120, latency=0.8)
+
+    def entry(age, secs=60, latency=1.2):
+        return dict(ts=(now - age).isoformat(), text="sample words", secs=secs, latency=latency)
+
+    no_history = app._history_metric_trends([], now, dict(today=0, words_week=0, wpm=0, latency=0))
+    assert no_history["today"] == [None] * 6 + [0]
+    assert no_history["wpm"] == [None] * 4
+    partial = app._history_metric_trends([entry(timedelta(days=8))], now, current)
+    assert partial["words_week"][-2:] == [None, 60], partial
+    assert partial["latency"][-2:] == [None, 0.8], partial
+    saved = [entry(timedelta(days=1, hours=1)), entry(timedelta(days=1) - timedelta(hours=1)),
+             entry(timedelta(days=8), secs=30), entry(timedelta(days=9), secs=0, latency=0),
+             entry(timedelta(days=24)), entry(timedelta(days=30)), entry(timedelta(hours=-1))]
+    measured = app._history_metric_trends(saved, now, current)
+    assert measured["today"][-2:] == [1, 3], measured
+    assert measured["words_week"] == [2, 0, 4, 60], measured
+    assert measured["wpm"] == [2, None, None, 120], measured
+    assert measured["latency"] == [1.2, None, 1.2, 0.8], measured
+
+
+check_history_trends(d)
+
 assert api.clear_history() and api.get_history() == []
 
 # ---- revision loop with mocked models ----

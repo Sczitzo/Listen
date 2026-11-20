@@ -83,6 +83,20 @@ async function run(name,fn){try{await fn();}catch(e){failed.push(name+': '+Strin
 const tick=()=>new Promise(r=>setImmediate(r));
 
 (async()=>{
+await run('Prompt Lab quality thresholds match for total and rubric scores',async()=>{
+ const c=vm.createContext({setDisplayedProperty(obj,k,v){if(obj[k]!==v)obj[k]=v}});
+ vm.runInContext(cut('const SCORE_LABELS =','function prevIdx('),c);
+ for (const [value,max,expected] of [[1,10,'needs-work'],[5.9,10,'needs-work'],[6,10,'fair'],[7.9,10,'fair'],
+  [8,10,'strong'],[10,10,'strong'],[2,5,'needs-work'],[3,5,'fair'],[4,5,'strong'],[null,10,'none'],[NaN,10,'none'],[11,10,'none']]) {
+   assert.equal(c.scoreQuality(value,max),expected);
+   assert(c.scoreAttributes(value,max).includes('data-score-quality="'+expected+'"'));
+ }
+ const badge={dataset:{}};
+ c.setScoreBadge(badge,8,'Score 8/10');
+ assert.deepEqual(badge,{dataset:{scoreQuality:'strong'},title:'Strong',textContent:'Score 8/10'});
+ c.setScoreBadge(badge,undefined,'Not scored');
+ assert.deepEqual(badge,{dataset:{scoreQuality:'none'},title:'',textContent:'Not scored'});
+});
 await run('Prompt Lab chip focus kept after re-render',async()=>{
  const R=registry(),active=el();active.dataset.key='target';active.closest=s=>s==='.chips'?{id:'chips-lab'}:null;
  const c=vm.createContext({document:{activeElement:active},settings:{cleanup:true,hotkey:'ctrl_r',style:'tighten'},options:{hotkey:{'Right Ctrl':'ctrl_r'},style:{},target:{},engine:{},judge:{}},esc:x=>String(x),$:R,$$:()=>[],setSetting(){}});
