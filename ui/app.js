@@ -1000,6 +1000,7 @@ const historyDayLabel = new Intl.DateTimeFormat(undefined, {weekday:"long", mont
 const historyShortDay = new Intl.DateTimeFormat(undefined, {month:"short", day:"numeric"});
 const historyShortOldDay = new Intl.DateTimeFormat(undefined, {month:"short", day:"numeric", year:"2-digit"});
 const historyTime = new Intl.DateTimeFormat(undefined, {hour:"2-digit", minute:"2-digit"});
+const sharpHistoryIcon = icon => typeof icon === "string" && icon.startsWith("iVBORw0KGgoAAAANSUhEUgAAAIAAAACA");
 
 function historyAppName(app) {
   return typeof app?.name === "string" && app.name.trim() && app.name.length <= 80 ? app.name : "";
@@ -1008,7 +1009,7 @@ function historyAppMark(app) {
   const name = historyAppName(app);
   if (!name) return '<span class="history-app unknown">App not recorded</span>';
   const icon = app.icon;
-  const mark = typeof icon === "string" && icon.length <= 4608 && /^iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/.test(icon)
+  const mark = typeof icon === "string" && icon.length <= 24576 && /^iVBORw0KGgo[A-Za-z0-9+/]*={0,2}$/.test(icon)
     ? `<img src="data:image/png;base64,${icon}" alt="" width="22" height="22">`
     : `<span class="history-app-mark" aria-hidden="true">${esc(Array.from(name)[0].toUpperCase())}</span>`;
   return `<span class="history-app">${mark}${esc(name)}</span>`;
@@ -1027,7 +1028,7 @@ function historyGroups(rows, byApp) {
       groups.set(key, group);
     }
     group.entries.push(row);
-    if (!group.app?.icon && row.app?.icon) group.app = row.app;
+    if (row.app?.icon && (!group.app?.icon || (sharpHistoryIcon(row.app.icon) && !sharpHistoryIcon(group.app.icon)))) group.app = row.app;
   }
   const ordered = [...groups.values()];
   if (byApp && groups.has("app:")) ordered.push(...ordered.splice(ordered.indexOf(groups.get("app:")), 1));
@@ -1177,7 +1178,7 @@ function historyTrend(key, series = []) {
 async function loadHistory(entering = false) {
   historyEntryPending ||= entering;
   const request = ++historyRequest;
-  const history = await api().get_history();
+  const history = await api().get_history(true);
   if (request !== historyRequest) return;
   histAll = history;
   renderHistory();

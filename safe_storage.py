@@ -67,6 +67,12 @@ def load_json(path, default):
     return copy.deepcopy(default)
 
 
+HISTORY_ICON_SIZE = 128
+HISTORY_ICON_LIMIT = 24576
+_PNG_HEADER = b'\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR'
+SHARP_ICON_PREFIX = base64.b64encode(_PNG_HEADER + HISTORY_ICON_SIZE.to_bytes(4, 'big') * 2).decode('ascii')
+
+
 def _history_app(value):
     name = value.get('name') if isinstance(value, dict) else None
     if (not isinstance(name, str) or not name or len(name) > 80
@@ -74,10 +80,11 @@ def _history_app(value):
         return None
     app = {'name': name}
     icon = value.get('icon')
-    if isinstance(icon, str) and 0 < len(icon) <= 4608:
+    if isinstance(icon, str) and 0 < len(icon) <= HISTORY_ICON_LIMIT:
         try:
             data = base64.b64decode(icon, validate=True)
-            if data.startswith(b'\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x20\x00\x00\x00\x20'):
+            dimensions = data[16:24]
+            if data.startswith(_PNG_HEADER) and any(dimensions == size.to_bytes(4, 'big') * 2 for size in (32, HISTORY_ICON_SIZE)):
                 with Image.open(io.BytesIO(data), formats=['PNG']) as image:
                     image.verify()
                 app['icon'] = icon

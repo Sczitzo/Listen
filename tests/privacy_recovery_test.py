@@ -46,7 +46,8 @@ with patch.object(target_icon.ctypes, 'WinDLL', lambda name: name), \
          'OpenProcess': lambda access, inherit, pid: 55 if (access, inherit, pid) == (0x1000, False, target.pid) else None,
          'QueryFullProcessImageNameW': process_name,
          'CloseHandle': closed.append,
-     }[symbol]), patch.object(target_icon, 'window_icon', side_effect=lambda *args: Image.new('RGB', (32, 32), 'red')) as icon:
+     }[symbol]), patch.object(target_icon, '_executable_icon', return_value=None), \
+     patch.object(target_icon, 'window_icon', side_effect=lambda *args: Image.new('RGB', (32, 32), 'red')) as icon:
     app = target_icon.history_app(target.hwnd, target.pid)
     icon.assert_called_once_with(target.hwnd, target.pid, 32, '#2d2925')
     icon.side_effect = OSError('synthetic icon failure')
@@ -68,6 +69,25 @@ saved = api.get_history()[0]
 assert saved['raw'] == private and saved['app'] == app and saved['delivery_status'] == 'retained'
 assert set(saved['app']) == {'name', 'icon'}
 assert 'Private_User_Profile' not in Path(d.HISTORY).read_text() and target.field_token not in Path(d.HISTORY).read_text()
+before_upgrade = Path(d.HISTORY).read_bytes()
+sharp = target_icon._encode_icon(Image.new('RGB', (128, 128), 'red'))
+with patch.object(target_icon, '_open_app_icons', return_value={('vs code', app['icon']): sharp}) as open_icons:
+    updated = api.get_history(True)[0]
+    assert updated['app']['icon'] == sharp
+    assert open_icons.call_args.args[0] == frozenset({('vs code', app['icon'])})
+assert Path(d.HISTORY).read_bytes() == before_upgrade and api.get_history()[0]['app'] == app
+sharp_probe = Path(folder) / 'sharp-history.jsonl'
+sharp_probe.write_text(json.dumps({**saved, 'app': {'name': 'VS Code', 'icon': sharp}}) + '\n', encoding='utf-8')
+assert d.read_history(sharp_probe)[0][0]['app']['icon'] == sharp
+clean_icon = target_icon._encode_icon(Image.new('RGB', (32, 32), 'blue'))
+unmatched = [{'app': {'name': 'VS Code', 'icon': clean_icon}}]
+with patch.object(target_icon, '_open_app_icons', return_value={('vs code', app['icon']): sharp}):
+    assert target_icon.refresh_history_icons(unmatched)[0]['app']['icon'] == clean_icon
+assert d.read_history(d.HISTORY)[0][0]['app']['icon'] == app['icon']
+with patch.object(target_icon.ctypes, 'WinDLL', return_value='kernel32') as load_system, \
+     patch.object(target_icon, '_api', return_value=lambda _root: 4):
+    assert target_icon._executable_icon('Z:\\Code.exe') is None
+    load_system.assert_called_once_with('kernel32')
 
 # Error values can include provider payloads: neither logs nor UI should echo them.
 with patch.object(d, '_chat', side_effect=RuntimeError(private)), contextlib.redirect_stdout(output):

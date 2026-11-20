@@ -65,7 +65,7 @@ from speech_process import SpeechProcessRuntime
 from transcript_preview import FINAL_NOTICE_SECONDS, TranscriptPreview, audio_interval
 from draft_preview import DraftCoordinator, DraftJob
 from preview_card import PreviewCard, work_area
-from target_icon import history_app
+from target_icon import history_app, refresh_history_icons
 import paste_windows as clipboard_delivery
 import text_input_windows as text_delivery
 from dataclasses import replace as replace_target
@@ -2667,7 +2667,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261120-listen19-history-timeline"
+UI_VERSION = "20261120-listen19-sharp-history-icons"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -3040,13 +3040,14 @@ class Api(ExperienceApi):
         return True
 
     # ---- history & stats ----
-    def get_history(self):
+    def get_history(self, refresh_icons=False):
         global _last_error
         with _data_lock:
             rows, skipped = read_history(HISTORY)
         if skipped:
             _last_error = f"History recovered: {skipped} unreadable record(s) skipped. The original file is preserved."
-        return list(reversed(rows))
+        rows.reverse()
+        return refresh_history_icons(rows) if refresh_icons is True else rows
 
     def clear_history(self):
         global _history_len, _history_generation
