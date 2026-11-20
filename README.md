@@ -1,52 +1,96 @@
-# Listen
+# Listen — Local speech-to-text and voice typing for Windows
 
-Windows dictation with local speech recognition, optional Ollama text cleanup,
-a floating recording panel, and a writing workspace.
+Listen is a Windows dictation app that turns speech into text and types it into the app you were using when you started recording. Speech recognition runs on your computer with a supported local model. You can also tidy dictation with Ollama, browse past dictations by date or destination app, and write or review prompts in Prompt Lab.
 
-Created by Sczitzo. Free to use under the MIT License: keep the copyright
-notice and credit when you reuse it.
+**[Download for Windows](https://github.com/Sczitzo/Listen/releases/tag/v2026.11.20)** · [Screenshots](#screenshots) · [System requirements](#system-requirements)
 
-## Development snapshot — November 18, 2026 (build 20261119-listen19)
+## What you can do
 
-The Warm charcoal / Humanist interface follows the approved Quiet Instrument and
-Writer's Desk composition. The recording card uses a titled continuous border,
-a larger destination icon, a quiet Cancel action and optional gentle animation.
-Finish remains available through the dictation key and main window.
+- **Dictate into other Windows apps.** Use the default **Right Ctrl** shortcut or choose a shortcut in Settings. Hold the key and release to finish, or tap to start and tap again to finish. The floating panel shows recording status and can display a live transcript.
+- **Clean up text locally.** Ollama can tidy grammar and remove filler words. Listen keeps recognition and cleanup separate, so you can choose their models independently.
+- **Find past dictations.** Search History or group entries by day or destination app. Recent entries show the app name and icon when Listen can identify the destination. Copy the cleaned text or the original transcript.
+- **Write and review AI prompts.** Prompt Lab keeps draft revisions, shows feedback and lets you choose a local model or an optional cloud provider for each stage.
 
-Speech recognition has a persisted dropdown of supported installed caches,
-with Parakeet Unified English 0.6B Q8_0 as the default. Switching is refused
-during active work. Parakeet is English-only and does not use Whisper vocabulary
-hints. Recognition and AI cleanup use separate models.
+## System requirements
 
-The Ollama menu reflects the installed inventory and preserves the saved choice.
-Its scores and recommendation come from a historical November 9 cleanup test:
-39 synthetic samples per tested model, scored by app acceptance and expected-term
-checks. They are not a current formatter comparison or Prompt Lab quality scores.
-Untested models are identified. Refresh does not download or run a model.
+| Requirement | What you need |
+| --- | --- |
+| Windows | A 64-bit Windows PC and a microphone. The release installer is for x64. |
+| Desktop runtime | Python 3.13 x64, the packages pinned in [`requirements.txt`](requirements.txt), and Microsoft Edge WebView2 Runtime. [Python for Windows](https://www.python.org/downloads/windows/) · [Microsoft Edge WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) |
+| Local speech recognition | The default is Parakeet Unified English 0.6B Q8_0. It needs the matching local model cache and `transcribe.cpp` v0.4.2 runtime. Settings can list supported Whisper models already cached on your computer. [Pinned Parakeet model](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/tree/7e948f21b7bdbac698d3318db9d350f1096f3b6c) · [Native runtime release](https://github.com/handy-computer/transcribe.cpp/releases/tag/v0.4.2) · [Cache and runtime paths](parakeet_runtime.py) |
+| Optional AI features | Ollama with an installed text model for local cleanup or Prompt Lab. Cloud Prompt Lab stages require the provider’s API key and can incur charges. |
 
-Local AI cleanup can supply validated lists and section layout. Unsafe changes
-fall back conservatively. A saved text-model change starts a background readiness
-check; a newer selection follows any older check already in progress. Model loading has a separate 60-second background
-budget; final cleanup keeps its 15-second limit and 8192-token context. A model
-inventory response alone is not readiness. This is source, not an installer or
-a claim of natural-speech or real destination-delivery acceptance.
+## Install Listen on Windows
 
-## Running on an already configured Windows machine
+1. Download **Listen-Windows-x64.msi** from the [Windows release](https://github.com/Sczitzo/Listen/releases/tag/v2026.11.20).
+2. Run the MSI to install Listen for your Windows account and add its Start menu shortcut.
+3. Install the desktop requirements above. Then use PowerShell to install Listen’s pinned Python packages into its own environment:
 
-Use Python 3.13 with the packages in requirements.txt. Ollama must be available
-locally for cleanup. Optional Claude operations use ANTHROPIC_API_KEY from the
-environment and may incur charges; no credentials are included.
+   ```powershell
+   Set-Location "$env:LOCALAPPDATA\Programs\Listen"
+   py -3.13 -m venv .venv
+   & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
 
-Parakeet requires the validated local model cache and transcribe 0.4.2 native
-runtime. They are not included or downloaded here. parakeet_runtime.py specifies
-the expected locations, revision and integrity hash. Cached Whisper alternatives
-use the existing faster-whisper runtime. The dropdown does not install models.
+4. For the default English speech model, put the downloaded model and DLLs in the locations below. An already configured Listen machine can reuse its existing speech cache.
+5. Open **Listen** from the Windows Start menu. Once speech is ready, focus the app where you want your words to appear and use the dictation shortcut.
 
-setup.bat is the existing Whisper-oriented helper: it installs packages and
-downloads Qwen2.5:7b but does not provision Parakeet. Review those effects before
-using it. This update did not install or download anything. On a configured
-machine, use run.bat or launch_listen.pyw; the latter opens the main window and
-reuses an existing instance.
+The MSI is a per-user installer for the app and shortcut. It’s unsigned. Python, WebView2, speech resources and optional AI services are separate prerequisites. The older [`setup.bat`](setup.bat) helper targets Whisper and downloads an Ollama model.
+
+### Set up the default Parakeet speech model
+
+- Download [`parakeet-unified-en-0.6b-Q8_0.gguf`](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/7e948f21b7bdbac698d3318db9d350f1096f3b6c/parakeet-unified-en-0.6b-Q8_0.gguf) and save it under `%USERPROFILE%\.cache\huggingface\hub\models--handy-computer--parakeet-unified-en-0.6b-gguf\snapshots\7e948f21b7bdbac698d3318db9d350f1096f3b6c\`. The expected SHA-256 is `4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795`.
+- Download the [Windows x64 CPU/Vulkan runtime archive](https://github.com/handy-computer/transcribe.cpp/releases/download/v0.4.2/transcribe-native-0.4.2-windows-x86_64-cpu-vulkan.tar.gz). Check SHA-256 `6094102cf57b404b050707ceb258b12ce647b92e801b5d46077214e5b030c8aa`, then extract the DLLs directly into `%USERPROFILE%\AppData\Local\Listen\runtimes\transcribe-0.4.2-cpu-vulkan\`. `transcribe.dll` and its sibling DLLs belong in the same folder.
+
+To uninstall the app and shortcut, use **Settings → Apps → Installed apps → Listen**. Windows Installer leaves local history and settings in the Listen folder.
+
+For source development on a configured machine, run [`run.bat`](run.bat) or open [`launch_listen.pyw`](launch_listen.pyw).
+
+## Screenshots
+
+These show the release interface with sample data.
+
+### Dictate
+
+![Listen Dictate tab for Windows, with a shortcut, recording controls, vocabulary, and recent dictations](docs/screenshots/dictate.png)
+
+### History
+
+![Listen dictation History grouped by destination app, with search, app icons, and copy controls](docs/screenshots/history.png)
+
+### Prompt Lab
+
+![Listen Prompt Lab with a draft, revision controls, and an inline prompt score](docs/screenshots/prompt-lab.png)
+
+### Settings
+
+![Listen Settings with a recording shortcut, microphone, transcript preview, and local model selections](docs/screenshots/settings.png)
+
+The cleanup model scores in Settings come from a historical 39-sample cleanup test. Performance depends on the machine and task.
+
+## Privacy and offline use
+
+Listen processes speech on your computer. Dictation history, preferences, and working drafts are stored locally. Ollama can handle optional text cleanup and Prompt Lab stages on the same computer. If you enable paid cloud AI for Prompt Lab, the selected provider receives the input and context for the requests you choose to run. The destination app handles inserted text according to its own settings.
+
+Use `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for OpenAI, or `GEMINI_API_KEY` or `GOOGLE_API_KEY` for Gemini. Keep API keys in your environment and out of screenshots, issue reports, and commits.
+
+## Frequently asked questions
+
+### Does Listen work offline?
+
+Yes. Once the supported local speech runtime and model are installed, speech recognition can run offline. Optional cloud Prompt Lab requests require internet access. Initial downloads may also require an internet connection.
+
+### Which language does this build recognize?
+
+This build is configured for English dictation. The default Parakeet model is English-only. The vocabulary list can guide optional cleanup. Parakeet uses its own recognition vocabulary.
+
+### Why does Listen say speech is unavailable?
+
+Check **Settings → Speech to text & AI cleanup** and confirm the selected speech model and its runtime are installed. The model list shows supported local choices. Install the matching cache or choose an available model, then use **Retry startup** when Listen offers it.
+
+### Can I use Listen without Ollama or a paid API key?
+
+Yes. With a supported local speech model ready, basic dictation works without Ollama or a cloud account. Ollama enables local cleanup and local Prompt Lab processing. Provider keys are for optional cloud Prompt Lab requests.
 
 ## Verification
 
@@ -54,23 +98,18 @@ reuses an existing instance.
 python tests/run_tests.py --no-devices
 ```
 
-The 72 selected suites use disposable app data and block real network, microphone,
-physical input and clipboard access. They do not establish live recognition or
-delivery quality. The separate Windows card harness is opt-in and uses an owned
-sample editor. See tests/README.md.
+The release source passed 75 device-free regression suites. They use disposable data and block real network calls, microphone access, physical input, and clipboard access. A separate Windows card harness is described in [the regression check guide](tests/README.md).
 
-## Publication contents
+### Build the Windows installer from source
 
-Application source, UI/icons, brand source, configured regression tests,
-launch/setup scripts and one code-only baseline archive required by latency tests.
-Local development history, recordings, model/native binaries, drafts, settings,
-credentials, owner notes, screenshots and runtime logs are excluded.
-Licensed Mixkit WAV files are omitted; synthesized fallback sounds remain.
+On a Windows build machine with Git, Python 3.13 and the Windows .NET Framework C# compiler, run this from the repository root:
+
+```powershell
+py -3.13 -B packaging/windows/build_installer.py --repo . --revision v2026.11.20 --output Listen-Windows-x64.msi
+```
+
+The build packages the tagged app files using Windows Installer and the Windows cabinet tool. It does not download models or copy any local app data.
 
 ## License
 
-MIT. See LICENSE.
-
-The Lantern recording card now follows microphone volume with five bars and a gently wobbling circle. A soft click-through shadow adds depth while text and typing focus stay steady.
-
-The live preview uses normal-size reading text, a smaller Listening label and tighter margins.
+Created by Sczitzo and released under the [MIT License](LICENSE).
