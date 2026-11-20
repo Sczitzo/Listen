@@ -262,6 +262,7 @@ $$(".rail-btn").forEach(b => b.onclick = () => show(b.dataset.page));
 $$("[data-goto]").forEach(b => b.onclick = () => show(b.dataset.goto));
 const hotkeyDialog = $("#hotkey-dialog"), hotkeyCapture = $("#hotkey-capture");
 const hotkeyCancel = $("#hotkey-cancel"), hotkeyAgain = $("#hotkey-again"), hotkeyUse = $("#hotkey-use");
+const hotkeyController = $("#hotkey-controller");
 const hotkeySingles = {ControlRight:"ctrl_r", ShiftRight:"shift_r", AltRight:"alt_r", Pause:"pause", ScrollLock:"scroll_lock"};
 const hotkeyNamedTriggers = {ArrowLeft:"arrow_left", ArrowRight:"arrow_right", ArrowUp:"arrow_up", ArrowDown:"arrow_down",
   Home:"home", End:"end", Insert:"insert", Delete:"delete", PageUp:"page_up", PageDown:"page_down",
@@ -269,6 +270,7 @@ const hotkeyNamedTriggers = {ArrowLeft:"arrow_left", ArrowRight:"arrow_right", A
 const hotkeyHeld = new Set(), hotkeyOpenerKeys = new Set();
 let hotkeyLease = null, hotkeyOpening = false, hotkeyMode = "listening";
 let hotkeyTrigger = null, hotkeyChoice = "", hotkeyBlock = "", hotkeyMultiple = false;
+let controllerHotkeyAttempt = null;
 
 document.addEventListener("keydown", event => {
   if ((event.key === "Enter" || event.key === " ") && !event.isComposing && event.keyCode !== 229
@@ -320,8 +322,12 @@ function resetHotkeyKeys() {
 
 function resetHotkeyPicker() {
   hotkeyMode = "listening";
+  controllerHotkeyAttempt = null;
   resetHotkeyKeys();
   hotkeyCapture.disabled = hotkeyCancel.disabled = hotkeyAgain.disabled = hotkeyUse.disabled = false;
+  let controllerAvailable = false;
+  try { controllerAvailable = typeof api().begin_controller_hotkey_capture === "function"; } catch {}
+  hotkeyController.classList.toggle("hidden", !controllerAvailable);
   $("#hotkey-options").textContent = "";
   $("#hotkey-windows-note").classList.add("hidden");
   $("#hotkey-conflict").classList.add("hidden");
@@ -375,7 +381,7 @@ function showHotkeyCheck(level, message = "") {
   $("#hotkey-conflict-message").textContent = message;
   $("#hotkey-conflict").classList.toggle("hidden", level === "clear");
   $("#hotkey-windows-note").classList.toggle("hidden",
-    demo || level === "blocked" || Object.values(hotkeySingles).includes(hotkeyChoice));
+    demo || level === "blocked" || hotkeyChoice.startsWith("controller_") || Object.values(hotkeySingles).includes(hotkeyChoice));
   hotkeyAgain.classList.remove("hidden");
   hotkeyUse.classList.toggle("hidden", level === "blocked");
   hotkeyUse.textContent = level === "warning" ? "Use anyway" : "Use hotkey";
@@ -387,6 +393,7 @@ async function checkHotkeyChoice() {
   const lease = hotkeyLease;
   hotkeyMode = "checking";
   hotkeyCapture.disabled = true;
+  hotkeyController.classList.add("hidden");
   hotkeyCancel.focus();
   if (hotkeyBlock) {
     showHotkeyCheck("blocked", hotkeyBlock);
@@ -406,6 +413,39 @@ async function checkHotkeyChoice() {
       showHotkeyCheck("blocked", "Could not check this shortcut. Try again.");
     }
   }
+}
+
+hotkeyController.onclick = async () => {
+  const lease = hotkeyLease;
+  if (!lease || !hotkeyDialog.open || hotkeyMode !== "listening") return;
+  hotkeyMode = "starting-controller";
+  hotkeyCapture.disabled = true;
+  hotkeyController.classList.add("hidden");
+  hotkeyCancel.focus();
+  $("#hotkey-key").textContent = "Checking for a controller…";
+  let result;
+  try { result = await api().begin_controller_hotkey_capture(lease.token); }
+  catch { /* Show the available keyboard picker again after a connection failure. */ }
+  if (hotkeyLease !== lease || !hotkeyDialog.open) return;
+  if (!result?.ok) {
+    resetHotkeyPicker();
+    $("#hotkey-options").textContent = result?.message || "Could not start controller capture. Try again.";
+    hotkeyCapture.focus();
+    return;
+  }
+  controllerHotkeyAttempt = {token:lease.token};
+  hotkeyMode = "controller";
+  $("#hotkey-key").textContent = "Tap a controller button, then let go.";
+};
+
+function receiveControllerHotkey(attempt, capture) {
+  if (!attempt || attempt !== controllerHotkeyAttempt || !hotkeyDialog.open || hotkeyMode !== "controller"
+      || capture?.token !== attempt.token || typeof capture.binding !== "string"
+      || !/^controller_[a-z0-9]+(?:_[a-z0-9]+)*$/.test(capture.binding)) return;
+  controllerHotkeyAttempt = null;
+  hotkeyChoice = capture.binding;
+  renderHotkeyKeycaps($("#hotkey-key"), hotkeyLabel(hotkeyChoice));
+  checkHotkeyChoice();
 }
 
 function useSavedHotkey(value) {
@@ -466,14 +506,14 @@ hotkeyCapture.addEventListener("keyup", event => {
 });
 hotkeyCapture.addEventListener("blur", () => { if (hotkeyMode === "listening") resetHotkeyKeys(); });
 hotkeyAgain.onclick = () => { resetHotkeyPicker(); hotkeyCapture.focus(); };
-hotkeyUse.addEventListener("keydown", event => {
-  if (event.key === "Enter") event.preventDefault();
-});
-hotkeyUse.addEventListener("keyup", event => {
-  if (event.key !== "Enter") return;
-  event.preventDefault();
-  hotkeyUse.click();
-});
+for (const button of [hotkeyUse, hotkeyController]) {
+  button.addEventListener("keydown", event => { if (event.key === "Enter") event.preventDefault(); });
+  button.addEventListener("keyup", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    button.click();
+  });
+}
 hotkeyUse.onclick = async () => {
   const lease = hotkeyLease;
   if (!lease || hotkeyMode !== "checked" || hotkeyUse.classList.contains("hidden")) return;
@@ -511,6 +551,7 @@ window.addEventListener("blur", () => { if (hotkeyDialog.open && hotkeyMode !== 
 hotkeyDialog.addEventListener("close", async () => {
   const lease = hotkeyLease;
   if (!lease) return;
+  controllerHotkeyAttempt = null;
   clearTimeout(lease.timer);
   if (lease.opener.isConnected && document.hasFocus()) lease.opener.focus();
   try { await api().finish_hotkey_capture(lease.token); }
@@ -576,6 +617,13 @@ function promptRouteSummary(stage) {
   return `${name}${provider?.model ? " · " + provider.model : ""}. Paid cloud. Text is sent when you ask for this step.`;
 }
 function hotkeyLabel(value) {
+  if (value?.startsWith("controller_")) {
+    const key = value.slice("controller_".length);
+    const labels = {a:"A", b:"B", x:"X", y:"Y", dpad_up:"D-pad Up", dpad_down:"D-pad Down",
+      dpad_left:"D-pad Left", dpad_right:"D-pad Right", left_bumper:"Left Bumper", right_bumper:"Right Bumper",
+      left_stick:"Left Stick", right_stick:"Right Stick", start:"Start", back:"Back"};
+    return "Controller " + (labels[key] || key.split("_").map(word => word[0]?.toUpperCase() + word.slice(1)).join(" "));
+  }
   const labels = {ctrl_r:"Right Ctrl", shift_r:"Right Shift", alt_r:"Right Alt", pause:"Pause", scroll_lock:"Scroll Lock",
     ctrl:"Ctrl", alt:"Alt", shift:"Shift", win:"Win", space:"Space", arrow_left:"Left Arrow", arrow_right:"Right Arrow",
     arrow_up:"Up Arrow", arrow_down:"Down Arrow", home:"Home", end:"End", insert:"Insert", delete:"Delete",
@@ -1805,12 +1853,16 @@ $("#discard-clipboard").onclick=async()=> {
 async function poll() {
   pollRunning=true;
   const statePreviewEpoch=previewUiEpoch;
+  let controllerAttempt;
   try {
-    S = await api().get_state(); bridgeLost=false;connection("");
+    const bridge = api();
+    if (typeof bridge.begin_controller_hotkey_capture === "function") controllerAttempt = controllerHotkeyAttempt;
+    S = await bridge.get_state(); bridgeLost=false;connection("");
   } catch (e) {
     bridgeLost=true;connection("Desktop connection lost. Your input remains here. Reconnect the app before continuing; no action will retry automatically.");
   }
   if (!bridgeLost) try {
+    if (controllerAttempt) receiveControllerHotkey(controllerAttempt, S.controller_hotkey_capture);
     setStatus(S);
     renderPreview(S,statePreviewEpoch);
     if(!S.busy && S.state!=="recording" && Date.now()-lastDeliveryAt>=1000) { lastDeliveryAt=Date.now(); await loadDeliveryStatus(); }

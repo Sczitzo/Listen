@@ -5,6 +5,8 @@ does not call application, native input, storage, microphone or model APIs.
 """
 import threading
 
+from controller_hotkey import controller_binding, controller_label
+
 
 LEGACY_BINDINGS = frozenset(('ctrl_r', 'shift_r', 'alt_r', 'pause', 'scroll_lock'))
 LEGACY_KEYS = {'ctrl_r': 0xA3, 'shift_r': 0xA1, 'alt_r': 0xA5,
@@ -36,6 +38,8 @@ def _parse(value):
         return ('legacy', (), LEGACY_KEYS[value])
     if value in MOUSE_BINDINGS:
         return ('mouse', (), value[6:])
+    if controller_binding(value):
+        return ('controller', (), value)
     # Require an exact canonical sequence, no duplicates and a single trigger.
     parts = value.split('+')
     if (len(parts) > 4 or parts[-1] not in TRIGGERS
@@ -56,12 +60,14 @@ def valid_binding(value):
 def valid_keyboard_binding(value):
     """The production setting excludes the separately deferred mouse feature."""
     parsed = _parse(value)
-    return (parsed is not None and parsed[0] != 'mouse'
+    return (parsed is not None and parsed[0] not in ('mouse', 'controller')
             and value not in ('alt+f4', 'ctrl+alt+delete')
             and value.rsplit('+', 1)[-1] != 'f12')
 
 
 def binding_label(value):
+    if controller_binding(value):
+        return controller_label(value)
     names = {'ctrl_r': 'Right Ctrl', 'shift_r': 'Right Shift', 'alt_r': 'Right Alt',
              'pause': 'Pause', 'scroll_lock': 'Scroll Lock', 'space': 'Space',
              'ctrl': 'Ctrl', 'alt': 'Alt', 'shift': 'Shift', 'enter': 'Enter', 'backspace': 'Backspace',
@@ -80,6 +86,8 @@ def windows_registration(value):
 
 
 def shortcut_conflict(value, check_registered):
+    if controller_binding(value):
+        return 'warning', 'Other apps still receive this button. Use a button they do not need.'
     if not valid_keyboard_binding(value):
         if isinstance(value, str) and ('win' in value.split('+') or value in ('alt+f4', 'ctrl+alt+delete')
                                       or value.rsplit('+', 1)[-1] == 'f12'):

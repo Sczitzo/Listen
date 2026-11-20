@@ -75,11 +75,12 @@ def _valid_combo(combo):
 
 
 class _Registration:
-    def __init__(self, native, on_edge, cancel_when=None, on_cancel=None):
+    def __init__(self, native, on_edge, cancel_when=None, on_cancel=None, external_cancel=None):
         self.native = native
         self.on_edge = on_edge
         self.cancel_when = cancel_when
         self.on_cancel = on_cancel
+        self.external_cancel = external_cancel
         self.current = None
         self.proposed = _NO_PROPOSAL
         self.held = False
@@ -163,7 +164,8 @@ class _Registration:
             self._emit(combo, True, at)
 
     def _can_cancel(self):
-        return (self.current is not None and self.cancel_when is not None
+        return ((self.current is not None or (self.external_cancel and self.external_cancel()))
+                and self.cancel_when is not None
                 and self.on_cancel is not None and self.cancel_when())
 
     def sync_cancel(self):
@@ -220,10 +222,11 @@ class _Command:
 class RegisteredHotkey:
     """Own a single Windows shortcut, with transactional replacement."""
 
-    def __init__(self, on_edge, cancel_when=None, on_cancel=None):
+    def __init__(self, on_edge, cancel_when=None, on_cancel=None, external_cancel=None):
         self._on_edge = on_edge
         self._cancel_when = cancel_when
         self._on_cancel = on_cancel
+        self._external_cancel = external_cancel
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._pending = None
@@ -257,6 +260,9 @@ class RegisteredHotkey:
     def replace(self, combo):
         return _valid_combo(combo) and self._call('replace', combo)
 
+    def wake(self):
+        self._wake.set()
+
     def close(self):
         if threading.current_thread() is self._thread:
             return False
@@ -269,7 +275,7 @@ class RegisteredHotkey:
     def _run(self):
         state = None
         try:
-            state = _Registration(_Win32(), self._on_edge, self._cancel_when, self._on_cancel)
+            state = _Registration(_Win32(), self._on_edge, self._cancel_when, self._on_cancel, self._external_cancel)
             while True:
                 with self._lock:
                     self._wake.clear()
@@ -282,7 +288,9 @@ class RegisteredHotkey:
                         finally:
                             command.finished.set()
                 state.sync_cancel()
-                watching = state.current is not None or state.proposed is not _NO_PROPOSAL
+                watching = (state.current is not None or state.proposed is not _NO_PROPOSAL
+                            or state.cancel_id is not None
+                            or (self._external_cancel and self._external_cancel()))
                 if watching:
                     for _ in range(32):
                         message = state.native.hotkey_message()

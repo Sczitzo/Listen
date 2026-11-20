@@ -76,6 +76,7 @@ from spoken_corrections import correction_source
 from voice_commands import split_voice_command, engineering_preservation_issue
 from hotkey_bindings import HotkeyRouter, LEGACY_BINDINGS, WINDOWS_MODIFIERS, binding_label, shortcut_conflict, windows_registration
 from registered_hotkey import RegisteredHotkey
+from controller_hotkey import ControllerHotkey, controller_binding
 from safe_storage import (atomic_write_json, load_json, read_history, valid_setting,
                           validated_settings, validated_favorites, validated_learned)
 from audio_devices import microphone_options, resolve_microphone
@@ -736,6 +737,11 @@ _hotkey_action_epoch = None
 _hotkey_input_lock = threading.RLock()
 _hotkey_router = HotkeyRouter(SETTINGS['hotkey'])
 _registered_hotkey = None
+_controller_hotkey = None
+_controller_binding_context = None
+_controller_capture_token = None
+_controller_capture_context = None
+_controller_pick = None
 _hotkey_pending = 0
 _hotkey_rebinding = False
 _hotkey_capture_token = None
@@ -1443,6 +1449,7 @@ def _capture_hotkeys_paused(at):
         return _hotkey_capture_draining
     if _hotkey_capture_token is not None and at >= _hotkey_capture_until:
         _hotkey_capture_token = None
+        _end_controller_capture()
     if _hotkey_capture_token is None and _hotkey_router.idle():
         _hotkey_capture_draining = False
     return _hotkey_capture_token is not None or _hotkey_capture_draining
@@ -1465,7 +1472,7 @@ def _refresh_capture_hotkeys():
 
 def _set_keyboard_binding(value, capture_token=None):
     global _hotkey_rebinding, _hotkey_epoch, _hotkey_down, _hook_key_down, _registered_hotkey
-    global _skip_release, _locked, _hotkey_cancel_recovery_generation
+    global _skip_release, _locked, _hotkey_cancel_recovery_generation, _controller_binding_context
     with _mic_lock, _hotkey_input_lock:
         if (_quitting or _speech_busy() or _lab['busy'] or _speech_changing
                 or _hotkey_pending or _hotkey_rebinding or _hook_key_down or _hotkey_down is not None):
@@ -1492,15 +1499,25 @@ def _set_keyboard_binding(value, capture_token=None):
         _hook_key_down = _skip_release = _locked = False
     registration = _registered_hotkey
     proposed = windows_registration(value)
+    new_controller = value if controller_binding(value) else None
+    old_controller = SETTINGS['hotkey'] if controller_binding(SETTINGS['hotkey']) else None
+    controller_changed = False
+    binding_context = uuid.uuid4().hex if new_controller is not None else None
+    saved = False
     reserved = False
     try:
-        if registration is None and proposed is not None:
+        if registration is None and (proposed is not None or new_controller is not None):
             registration = _registered_hotkey = RegisteredHotkey(
-                _registered_hotkey_edge, _registered_cancel_when, _registered_hotkey_cancel)
+                _registered_hotkey_edge, _registered_cancel_when, _registered_hotkey_cancel,
+                _controller_escape_enabled)
         if registration is not None:
             reserved = registration.prepare(proposed)
             if not reserved:
                 return False
+        if new_controller is not None or old_controller is not None:
+            if not _controller().set_binding(new_controller, binding_context):
+                return False
+            controller_changed = True
         with _data_lock:
             previous = dict(SETTINGS)
             updated = dict(previous, hotkey=value)
@@ -1512,17 +1529,71 @@ def _set_keyboard_binding(value, capture_token=None):
                 reserved = False
             with _hotkey_input_lock:
                 SETTINGS.update(updated)
+                if controller_changed:
+                    _controller_binding_context = binding_context
                 _hotkey_router.finish_rebind(True)
                 _hotkey_cancel_recovery_generation = None
+        saved = True
+        if registration is not None:
+            registration.wake()
         return True
     except (OSError, RuntimeError):
         return False
     finally:
         if reserved:
             registration.finish(False)
+        if controller_changed and not saved:
+            restore_context = uuid.uuid4().hex if old_controller is not None else None
+            _controller().set_binding(old_controller, restore_context)
+            with _hotkey_input_lock:
+                _controller_binding_context = restore_context
         with _hotkey_input_lock:
             _hotkey_router.finish_rebind(False)
             _hotkey_rebinding = False
+
+
+def _controller():
+    global _controller_hotkey
+    if _controller_hotkey is None:
+        _controller_hotkey = ControllerHotkey(_controller_edge)
+    return _controller_hotkey
+
+
+def _end_controller_capture():
+    global _controller_capture_token, _controller_capture_context, _controller_pick
+    if _controller_capture_token is not None and _controller_hotkey is not None:
+        _controller_hotkey.end_capture()
+    _controller_capture_token = None
+    _controller_capture_context = None
+    _controller_pick = None
+
+
+def _controller_escape_enabled():
+    return controller_binding(SETTINGS['hotkey']) and not _quitting
+
+
+def _controller_edge(binding, action, at, context):
+    global _controller_pick, _hook_key_down
+    with _hotkey_input_lock:
+        paused = _capture_hotkeys_paused(time.perf_counter())
+        if action == 'picked':
+            if (_controller_capture_token is not None and
+                    _controller_capture_token == _hotkey_capture_token and
+                    context == _controller_capture_context):
+                _controller_pick = {'token': _controller_capture_token, 'binding': binding}
+            return
+        if (binding != SETTINGS['hotkey'] or context is None or context != _controller_binding_context
+                or _quitting or _hotkey_rebinding or paused):
+            return
+        if action == 'press' and not _hook_key_down:
+            _hook_key_down = True
+            _queue_hotkey(_hotkey_epoch, 'press', binding, at, capture_target())
+        elif action == 'release' and _hook_key_down:
+            _hook_key_down = False
+            _queue_hotkey(_hotkey_epoch, 'release', binding, at)
+        elif action == 'cancel' and (_hook_key_down or _recording.is_set() or _hotkey_pending):
+            _hook_key_down = False
+            _queue_hotkey(_hotkey_epoch, 'cancel', None, at)
 
 
 def _registered_cancel_when():
@@ -1556,7 +1627,7 @@ def _registered_hotkey_edge(combo, down, at):
 
 
 def _create_keyboard_listener():
-    global _hotkey_dispatch_thread, _registered_hotkey, _last_error
+    global _hotkey_dispatch_thread, _registered_hotkey, _last_error, _controller_binding_context
     # Native reads at ingress must never lazy-initialize under an app lock.
     _text_native()
     with _hotkey_input_lock:
@@ -1567,11 +1638,17 @@ def _create_keyboard_listener():
         _hotkey_dispatch_thread = threading.Thread(target=_hotkey_worker, name='hotkey-actions', daemon=True)
         _hotkey_dispatch_thread.start()
     combo = windows_registration(SETTINGS['hotkey'])
-    if combo is not None and _registered_hotkey is None:
+    controller_value = SETTINGS['hotkey'] if controller_binding(SETTINGS['hotkey']) else None
+    if controller_value is not None:
+        _controller_binding_context = uuid.uuid4().hex
+        if not _controller().set_binding(controller_value, _controller_binding_context):
+            _last_error = 'Could not start the controller shortcut.'
+    if (combo is not None or controller_value is not None) and _registered_hotkey is None:
         try:
             _registered_hotkey = RegisteredHotkey(
-                _registered_hotkey_edge, _registered_cancel_when, _registered_hotkey_cancel)
-            if not _registered_hotkey.replace(combo):
+                _registered_hotkey_edge, _registered_cancel_when, _registered_hotkey_cancel,
+                _controller_escape_enabled)
+            if combo is not None and not _registered_hotkey.replace(combo):
                 _last_error = 'Your shortcut is unavailable in Windows. Choose another in Hotkey.'
         except (OSError, RuntimeError):
             _last_error = 'Windows shortcuts are unavailable. Open Hotkey to choose another.'
@@ -1579,20 +1656,23 @@ def _create_keyboard_listener():
 
 
 def _close_hotkey_dispatch():
-    global _hotkey_dispatch_thread, _hotkey_epoch, _registered_hotkey
+    global _hotkey_dispatch_thread, _hotkey_epoch, _registered_hotkey, _controller_hotkey
     registration_closed = _registered_hotkey is None or _registered_hotkey.close()
+    controller_closed = _controller_hotkey is None or _controller_hotkey.close()
+    if controller_closed:
+        _controller_hotkey = None
     if registration_closed:
         _registered_hotkey = None
     _hotkey_epoch += 1
     thread = _hotkey_dispatch_thread
     if thread is None:
-        return registration_closed
+        return registration_closed and controller_closed
     _hotkey_events.put(None)
     thread.join(2)
     if thread.is_alive():
         return False
     _hotkey_dispatch_thread = None
-    return registration_closed
+    return registration_closed and controller_closed
 
 
 def _event_filter(msg, data):
@@ -2579,7 +2659,7 @@ def _append_history(row):
 COLORS = {"loading": "#777777", "idle": "#4ade80", "recording": "#e5484d", "engineering": "#f5a524",
           "transcribing": "#f5a524", "cleaning": "#f5a524", "error": "#e5484d"}
 UI_DIR = os.path.join(APP_DIR, "ui")
-UI_VERSION = "20261120-listen19-windows-shortcuts"
+UI_VERSION = "20261120-listen19-controller-hotkeys"
 _win = None            # the pywebview window
 _tray = None
 _quitting = False
@@ -2812,6 +2892,7 @@ class Api(ExperienceApi):
                 "speech_retry_ready": _speech_retry_available(),
                 "preview": preview, "preview_now": time.perf_counter(), "preview_busy": _preview.in_flight(),
                 "pending_dictations": _jobs.unfinished_tasks,
+                "controller_hotkey_capture": _controller_pick,
                 "levels": list(_levels) if _recording.is_set() else []}
 
     def get_settings(self):
@@ -2856,11 +2937,30 @@ class Api(ExperienceApi):
             _hotkey_epoch += 1
             return {'ok': True, 'token': _hotkey_capture_token, 'expires_in': 30}
 
+    def begin_controller_hotkey_capture(self, token):
+        global _controller_capture_token, _controller_capture_context, _controller_pick
+        with _hotkey_input_lock:
+            if (not isinstance(token, str) or token != _hotkey_capture_token
+                    or time.perf_counter() >= _hotkey_capture_until or _quitting or _hotkey_rebinding):
+                return {'ok': False, 'message': 'Open the shortcut picker again.'}
+            context = uuid.uuid4().hex
+            try:
+                if not _controller().begin_capture(context):
+                    return {'ok': False, 'message': 'Release the controller buttons and try again.'}
+            except (OSError, RuntimeError):
+                return {'ok': False, 'message': 'Windows could not read the controller.'}
+            _controller_capture_token = token
+            _controller_capture_context = context
+            _controller_pick = None
+            return {'ok': True}
+
     def check_hotkey_capture(self, token, value):
         with _hotkey_input_lock:
             if (not isinstance(token, str) or token != _hotkey_capture_token
                     or time.perf_counter() >= _hotkey_capture_until or _quitting):
                 return {'ok': False, 'message': 'The picker timed out. Open Hotkey to try again.'}
+            if controller_binding(value) and _controller_pick != {'token': token, 'binding': value}:
+                return {'ok': True, 'level': 'blocked', 'message': 'Press and release the controller button first.'}
         if value == SETTINGS['hotkey'] and _registered_hotkey is not None:
             return {'ok': True, 'level': 'clear', 'message': ''}
         level, message = shortcut_conflict(value, _check_registered_hotkey)
@@ -2875,6 +2975,7 @@ class Api(ExperienceApi):
                 if _hotkey_rebinding:
                     return {'ok': False, 'message': 'The confirmed shortcut is still saving.'}
                 _hotkey_capture_token = None
+                _end_controller_capture()
                 _refresh_capture_hotkeys()
                 return {'ok': True}
         check = self.check_hotkey_capture(token, value)
@@ -2886,6 +2987,7 @@ class Api(ExperienceApi):
         with _hotkey_input_lock:
             if token == _hotkey_capture_token:
                 _hotkey_capture_token = None
+                _end_controller_capture()
                 _refresh_capture_hotkeys()
         return {'ok': True, 'hotkey': value}
 

@@ -132,15 +132,22 @@ await run('hotkey picker waits for release and checks registered keys',async()=>
  };
  const document={...targets(),hasFocus:()=>true}, window=targets();
  const dialog=R('#hotkey-dialog');dialog.showModal=()=>{dialog.open=true;};
- const capture=R('#hotkey-capture'), use=R('#hotkey-use');
- for(const control of [dialog,capture,use])Object.assign(control,targets());
+ const capture=R('#hotkey-capture'), use=R('#hotkey-use'), controller=R('#hotkey-controller');
+ for(const control of [dialog,capture,use,controller])Object.assign(control,targets());
  const opener=el();opener.isConnected=true;
  const event={key:'Enter',code:'Enter',target:{closest:()=>opener}};
- let begun=0, checked=[];
+ let begun=0, checked=[], controllerAvailable=false, controllerStarted=false;
  const c=vm.createContext({$:R,document,window,opener,page:'dictate',performance:{now:()=>0},setTimeout:()=>0,toast(){},demo:false,options:{},esc:String,
   api:()=>({
    begin_hotkey_capture:async()=>{begun++;return {ok:true,token:'one',expires_in:30};},
-   check_hotkey_capture:async(token,value)=>{checked.push(value);return {ok:true,level:'clear'};}
+   begin_controller_hotkey_capture:controllerAvailable ? async token=>{
+    assert.equal(token,'one');
+    return controllerStarted ? {ok:true} : {ok:false,message:'Connect your controller.'};
+   } : undefined,
+   check_hotkey_capture:async(token,value)=>{
+    checked.push(value);
+    return value.startsWith('controller_') ? {ok:true,level:'warning',message:'Other apps may see this button.'} : {ok:true,level:'clear'};
+   }
   })});
  vm.runInContext(cut('const hotkeyDialog =','$(".main").addEventListener("focusin"')+cut('function hotkeyLabel(','function chip('),c);
  document.fire('keydown',event);
@@ -156,6 +163,7 @@ await run('hotkey picker waits for release and checks registered keys',async()=>
  await opened;
  assert.equal(begun,1);
  assert(dialog.open);
+ assert(controller.cls.has('hidden'),'older bridges can still open the keyboard-only picker');
  const send=(type,key,code,ctrlKey=false)=>capture.fire(type,{key,code,ctrlKey,preventDefault(){},stopPropagation(){},getModifierState:()=>false});
  const press=(key,code=key,ctrlKey=false)=>{send('keydown',key,code,ctrlKey);send('keyup',key,code,ctrlKey);};
  const retry=()=>R('#hotkey-again').onclick();
@@ -187,6 +195,24 @@ await run('hotkey picker waits for release and checks registered keys',async()=>
  retry();
  press('F12');
  assert(use.cls.has('hidden'),'the reserved F12 key cannot be confirmed');
+ controllerAvailable=true;
+ retry();
+ assert(!controller.cls.has('hidden'));
+ await controller.onclick();
+ assert.match(R('#hotkey-options').textContent,/Connect your controller/);
+ assert(!capture.disabled,'keyboard capture recovers after a controller connection error');
+ controllerStarted=true;
+ await controller.onclick();
+ assert.match(R('#hotkey-key').textContent,/Tap a controller button/);
+ vm.runInContext("receiveControllerHotkey({token:'one'},{token:'one',binding:'controller_a'})",c);
+ vm.runInContext("receiveControllerHotkey(controllerHotkeyAttempt,{token:'old',binding:'controller_a'})",c);
+ assert.equal(checked.at(-1),'ctrl_r','ignore samples for a prior attempt or capture token');
+ vm.runInContext("receiveControllerHotkey(controllerHotkeyAttempt,{token:'one',binding:'controller_dpad_up'})",c);
+ await tick();
+ assert.equal(checked.at(-1),'controller_dpad_up');
+ assert.match(R('#hotkey-key').innerHTML,/<kbd>Controller D-pad Up<\/kbd>/);
+ assert.equal(use.textContent,'Use anyway');
+ assert(note.cls.has('hidden'),'controller capture uses its own conflict warning');
 });
 await run('renderSettings has four processing stages with the shared model under AI cleanup',async()=>{
  const R=registry();

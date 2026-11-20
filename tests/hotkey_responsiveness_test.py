@@ -50,9 +50,12 @@ def check_hotkey_picker():
     proposed_registration = None
 
     class Registration:
-        def __init__(self, callback, cancel_when=None, on_cancel=None):
+        def __init__(self, callback, cancel_when=None, on_cancel=None, external_cancel=None):
             self.callback = callback
             self.cancel_when, self.on_cancel = cancel_when, on_cancel
+
+        def wake(self):
+            pass
 
         def prepare(self, proposed):
             nonlocal proposed_registration
@@ -64,6 +67,22 @@ def check_hotkey_picker():
             if commit:
                 current_registration = proposed_registration
             return True
+    class Controller:
+        def __init__(self, callback):
+            self.callback = callback
+            self.binding = None
+            self.reading = False
+        def begin_capture(self, context):
+            self.capture_context = context
+            self.reading = True
+            return True
+        def end_capture(self):
+            self.reading = False
+        def set_binding(self, binding, context=None):
+            self.binding_context = context
+            self.binding = binding
+            return True
+
     def edge(vk, pressed):
         if pressed:
             snapshot.add(vk)
@@ -77,6 +96,8 @@ def check_hotkey_picker():
          patch.object(d, '_check_registered_hotkey', return_value='free'), \
          patch.object(d, '_registered_hotkey', None), \
          patch.object(d, 'RegisteredHotkey', Registration), \
+         patch.object(d, '_controller_hotkey', None), \
+         patch.object(d, 'ControllerHotkey', Controller), \
          patch.object(d, 'atomic_write_json', side_effect=lambda _, values: writes.append(values['hotkey'])), \
          patch.object(d, 'capture_target', return_value=None):
         epoch = d._hotkey_epoch
@@ -151,6 +172,32 @@ def check_hotkey_picker():
             assert not api.begin_hotkey_capture()['ok']
         with patch.object(d, 'atomic_write_json', side_effect=save_and_check_capture_ownership):
             assert api.finish_hotkey_capture(fourth, 'ctrl_r')['ok']
+
+        fifth = api.begin_hotkey_capture()['token']
+        assert not api.begin_controller_hotkey_capture('old-token')['ok']
+        assert api.begin_controller_hotkey_capture(fifth)['ok']
+        assert api.check_hotkey_capture(fifth, 'controller_a')['level'] == 'blocked'
+        controller = d._controller_hotkey
+        stale = controller.capture_context
+        assert api.begin_controller_hotkey_capture(fifth)['ok']
+        controller.callback('controller_b', 'picked', time.perf_counter(), stale)
+        assert api.get_state()['controller_hotkey_capture'] is None
+        controller.callback('controller_a', 'picked', time.perf_counter(), controller.capture_context)
+        assert api.get_state()['controller_hotkey_capture'] == {'token': fifth, 'binding': 'controller_a'}
+        assert api.check_hotkey_capture(fifth, 'controller_a')['level'] == 'warning'
+        assert not api.finish_hotkey_capture(fifth, 'controller_a')['ok']
+        assert api.finish_hotkey_capture(fifth, 'controller_a', True)['ok']
+        assert controller.binding == 'controller_a'
+        assert not controller.reading and api.get_state()['controller_hotkey_capture'] is None
+        controller.callback('controller_a', 'press', time.perf_counter(), stale)
+        assert d._hotkey_events.empty()
+        controller.callback('controller_a', 'press', time.perf_counter(), controller.binding_context)
+        controller.callback('controller_a', 'release', time.perf_counter(), controller.binding_context)
+        assert [d._hotkey_events.get_nowait()[1] for _ in range(2)] == ['press', 'release']
+        d._hotkey_pending -= 2
+        sixth = api.begin_hotkey_capture()['token']
+        assert api.finish_hotkey_capture(sixth, 'ctrl_r')['ok']
+        assert controller.binding is None
 
 
 check_hotkey_picker()

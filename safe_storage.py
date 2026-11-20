@@ -92,7 +92,8 @@ def read_history(path, limit=500):
 def valid_setting(key, value):
     if key == 'hotkey':
         from hotkey_bindings import valid_keyboard_binding
-        return valid_keyboard_binding(value)
+        from controller_hotkey import controller_binding
+        return valid_keyboard_binding(value) or controller_binding(value)
     if key == 'speech_model':
         from speech_runtime import SPEECH_MODEL_IDS
         return isinstance(value, str) and value in SPEECH_MODEL_IDS
