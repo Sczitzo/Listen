@@ -60,9 +60,6 @@ try {
         }
     }
 
-    $check = Start-Process -FilePath $launcher -ArgumentList '--check' -Wait -PassThru -WindowStyle Hidden
-    if ($check.ExitCode -ne 0) { throw 'Bundled Python or runtime could not load.' }
-    Write-Output 'Bundled Python and Tk passed, with system Python excluded from PATH.'
     & $python -I -B (Join-Path $PSScriptRoot 'verify_setup.py')
     if (-not $LegacyInstaller) {
     $model = & $python -I -B -c 'from parakeet_runtime import model_path; print(model_path())'
@@ -74,12 +71,18 @@ try {
         $launch = Start-Process -FilePath $launcher -PassThru
         if (-not $launch.WaitForExit(10000) -or $launch.ExitCode -ne 0) { throw 'The installed launcher failed.' }
         $deadline = (Get-Date).AddMinutes(15)
+        $processDeadline = (Get-Date).AddSeconds(20)
         $desktopLog = Join-Path $app 'dictation.log'
+        $setupLog = Join-Path $app 'setup.log'
         $sawSetup = $false
         do {
             Start-Sleep -Milliseconds 500
             $appProcess = Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
                 Where-Object { $_.ExecutablePath -eq $pythonw } | Select-Object -First 1
+            if (-not $appProcess -and (Get-Date) -gt $processDeadline) {
+                throw 'First-run Listen process exited before readiness.'
+            }
+            if (Test-Path -LiteralPath $setupLog) { throw (Get-Content -LiteralPath $setupLog -Raw) }
             if ($appProcess -and -not $sawSetup) {
                 $sawSetup = (Get-Process -Id $appProcess.ProcessId -ErrorAction SilentlyContinue).MainWindowTitle -eq 'Set up Listen'
             }
@@ -131,6 +134,9 @@ finally:
 '@ | & $python -I -B - $wav
 
     }
+    $check = Start-Process -FilePath $launcher -ArgumentList '--check' -Wait -PassThru -WindowStyle Hidden
+    if ($check.ExitCode -ne 0) { throw 'Bundled Python or runtime could not load.' }
+    Write-Output 'Bundled Python and Tk passed, with system Python excluded from PATH.'
     Set-Content -LiteralPath $history -Value '{"text":"Sample saved dictation"}'
 } finally {
     if ($appProcess) {

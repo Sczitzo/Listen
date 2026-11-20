@@ -93,8 +93,8 @@ def payload(repo, revision, staging):
     names = git(repo, 'ls-tree', '-r', '--name-only', revision).decode().splitlines()
     selected = [name for name in names if
                 ('/' not in name and name.endswith('.py')) or name.startswith('ui/') or
-                name in {'launch_listen.pyw', 'requirements.txt', 'LICENSE', 'README.md'}]
-    selected.append('packaging/windows/packaged_setup.py')
+                name in {'launch_listen.pyw', 'requirements.txt', 'LICENSE'}]
+    selected.extend(('packaging/windows/packaged_setup.py', 'packaging/windows/README.md'))
     for name in selected:
         destination = staging / (Path(name).name if name.startswith('packaging/') else name)
         destination.parent.mkdir(parents=True, exist_ok=True)

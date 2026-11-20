@@ -1,8 +1,8 @@
 # Listen Windows installer candidate
 
-Install the MSI and open **Listen** from the Start menu. The first launch downloads the English speech model (about 730 MB). Listen also installs Microsoft WebView2 if Windows doesn't already have it. You need an internet connection for that first launch. Afterward, default English dictation runs offline.
+Install the MSI and open **Listen** from the Start menu. The first launch downloads the English speech model (about 730 MB). When needed, Listen installs Microsoft WebView2 and the Visual C++ runtime. Windows may ask you to approve the Visual C++ install. You need an internet connection for that first launch. Afterward, default English dictation runs offline.
 
-The MSI includes a private x64 CPython 3.14 and Listen’s locked Python packages. It does not register them as system Python. The installer uses the CPU packages for the default Parakeet engine. Existing source installations can still use the NVIDIA packages in the main requirements file.
+The MSI includes a private x64 CPython 3.14 and Listen’s locked Python packages. They stay in Listen’s install folder. The installer uses the CPU packages for the default Parakeet engine. Existing source installations can still use the NVIDIA packages in the main requirements file.
 
 Uninstall removes the installer-owned app, Python, and speech engine. It keeps settings, History, and the separately downloaded speech model so reinstalling can reuse them. The MSI is unsigned.
 
@@ -14,4 +14,4 @@ Run on Windows from an explicit source revision. The installer build fetches and
 py -3.13 -B packaging/windows/build_installer.py --repo . --revision HEAD --output Listen-Windows-x64.msi
 ```
 
-The test workflow uses a fresh GitHub-hosted Windows VM and an empty test profile. It runs the installed app with system Python removed from PATH, downloads and verifies the model, recognizes a generated audio sample, and checks uninstall and upgrade. It does not test a physical microphone.
+The test workflow uses a fresh GitHub-hosted Windows VM and an empty test profile. It runs the installed app with system Python removed from PATH, downloads and verifies the model, recognizes a generated audio sample, and checks uninstall and upgrade. Physical microphone testing requires a PC or VM with audio input.

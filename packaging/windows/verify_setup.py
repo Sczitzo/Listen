@@ -34,6 +34,12 @@ def verify():
             setup.prepare_model(lambda *args: None, cancelled)
             download.assert_called_once()
         assert not list(Path(tmp).glob('listen-download-*'))
+    with (patch.object(setup, 'vc_runtime_ready', side_effect=[False, True]),
+          patch.object(setup, 'webview_ready', side_effect=[False, True]),
+          patch.object(setup, 'install_microsoft') as install,
+          patch.object(setup, 'model_selected', return_value=False)):
+        setup.prepare(lambda *args: None, threading.Event())
+        assert [call.kwargs['administrator'] for call in install.call_args_list] == [True, False]
 
 
 if __name__ == '__main__':
