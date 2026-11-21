@@ -2,7 +2,9 @@
 
 Listen is a Windows dictation app that turns speech into text and types it into the app you were using when you started recording. Speech recognition runs on your computer with a supported local model. You can also tidy dictation with Ollama, browse past dictations by date or destination app, and write or review prompts in Prompt Lab.
 
-**[Download for Windows](https://github.com/Sczitzo/Listen/releases/tag/v2026.11.20)** · [Screenshots](#screenshots) · [System requirements](#system-requirements)
+**[Download the Windows x64 installer](https://github.com/Sczitzo/Listen/releases/latest/download/Listen-Windows-x64.msi)** · [Release notes](https://github.com/Sczitzo/Listen/releases/latest) · [Screenshots](#screenshots)
+
+The installer includes Python. On first launch, Listen downloads and verifies the English speech model automatically. After that one-time setup, basic dictation works offline.
 
 ## What you can do
 
@@ -16,35 +18,20 @@ Listen is a Windows dictation app that turns speech into text and types it into 
 | Requirement | What you need |
 | --- | --- |
 | Windows | A 64-bit Windows PC and a microphone. The release installer is for x64. |
-| Desktop runtime | Python 3.13 x64, the packages pinned in [`requirements.txt`](requirements.txt), and Microsoft Edge WebView2 Runtime. [Python for Windows](https://www.python.org/downloads/windows/) · [Microsoft Edge WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) |
-| Local speech recognition | The default is Parakeet Unified English 0.6B Q8_0. It needs the matching local model cache and `transcribe.cpp` v0.4.2 runtime. Settings can list supported Whisper models already cached on your computer. [Pinned Parakeet model](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/tree/7e948f21b7bdbac698d3318db9d350f1096f3b6c) · [Native runtime release](https://github.com/handy-computer/transcribe.cpp/releases/tag/v0.4.2) · [Cache and runtime paths](parakeet_runtime.py) |
+| Internet | First launch needs a connection to download the English speech model, about 730 MB. |
+| Included setup | Listen includes its own Python and speech engine. It installs Microsoft WebView2 and Visual C++ when needed. Windows may ask for permission to install Visual C++. |
 | Optional AI features | Ollama with an installed text model for local cleanup or Prompt Lab. Cloud Prompt Lab stages require the provider’s API key and can incur charges. |
 
 ## Install Listen on Windows
 
-1. Download **Listen-Windows-x64.msi** from the [Windows release](https://github.com/Sczitzo/Listen/releases/tag/v2026.11.20).
-2. Run the MSI to install Listen for your Windows account and add its Start menu shortcut.
-3. Install the desktop requirements above. Then use PowerShell to install Listen’s pinned Python packages into its own environment:
+1. Download [**Listen-Windows-x64.msi**](https://github.com/Sczitzo/Listen/releases/latest/download/Listen-Windows-x64.msi).
+2. Run the installer. It adds **Listen** to the Windows Start menu and closes when installation finishes.
+3. Open **Listen** from Start. Wait for the first-run model download to finish. Listen reuses a verified copy of the model if it’s already on your PC.
+4. Open the app where your words should appear. Tap **Right Ctrl** to start dictating, then tap it again to finish. If you’ve selected a different shortcut, use the one shown on the **Dictate** tab.
 
-   ```powershell
-   Set-Location "$env:LOCALAPPDATA\Programs\Listen"
-   py -3.13 -m venv .venv
-   & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-   ```
+If a copy of Listen is already running, choose **Quit** in that copy before opening the new one from Start.
 
-4. For the default English speech model, put the downloaded model and DLLs in the locations below. An already configured Listen machine can reuse its existing speech cache.
-5. Open **Listen** from the Windows Start menu. Once speech is ready, focus the app where you want your words to appear and use the dictation shortcut.
-
-The MSI is a per-user installer for the app and shortcut. It’s unsigned. Python, WebView2, speech resources and optional AI services are separate prerequisites. The older [`setup.bat`](setup.bat) helper targets Whisper and downloads an Ollama model.
-
-### Set up the default Parakeet speech model
-
-- Download [`parakeet-unified-en-0.6b-Q8_0.gguf`](https://huggingface.co/handy-computer/parakeet-unified-en-0.6b-gguf/resolve/7e948f21b7bdbac698d3318db9d350f1096f3b6c/parakeet-unified-en-0.6b-Q8_0.gguf) and save it under `%USERPROFILE%\.cache\huggingface\hub\models--handy-computer--parakeet-unified-en-0.6b-gguf\snapshots\7e948f21b7bdbac698d3318db9d350f1096f3b6c\`. The expected SHA-256 is `4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795`.
-- Download the [Windows x64 CPU/Vulkan runtime archive](https://github.com/handy-computer/transcribe.cpp/releases/download/v0.4.2/transcribe-native-0.4.2-windows-x86_64-cpu-vulkan.tar.gz). Check SHA-256 `6094102cf57b404b050707ceb258b12ce647b92e801b5d46077214e5b030c8aa`, then extract the DLLs directly into `%USERPROFILE%\AppData\Local\Listen\runtimes\transcribe-0.4.2-cpu-vulkan\`. `transcribe.dll` and its sibling DLLs belong in the same folder.
-
-To uninstall the app and shortcut, use **Settings → Apps → Installed apps → Listen**. Windows Installer leaves local history and settings in the Listen folder.
-
-For source development on a configured machine, run [`run.bat`](run.bat) or open [`launch_listen.pyw`](launch_listen.pyw).
+The installer runs for your Windows account and is unsigned. Upgrades from an earlier Listen MSI preserve your settings and History. To uninstall, use **Settings → Apps → Installed apps → Listen**. Your settings, History, and downloaded speech model stay on your PC. A copy run directly from a source checkout has its own saved files.
 
 ## Screenshots
 
@@ -78,7 +65,7 @@ Use `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for OpenAI, or `GEMINI_API_
 
 ### Does Listen work offline?
 
-Yes. Once the supported local speech runtime and model are installed, speech recognition can run offline. Optional cloud Prompt Lab requests require internet access. Initial downloads may also require an internet connection.
+Yes. After the one-time download, the default English speech model runs on your PC and works offline. Optional cloud Prompt Lab requests need an internet connection.
 
 ### Which language does this build recognize?
 
@@ -86,7 +73,7 @@ This build is configured for English dictation. The default Parakeet model is En
 
 ### Why does Listen say speech is unavailable?
 
-Check **Settings → Speech to text & AI cleanup** and confirm the selected speech model and its runtime are installed. The model list shows supported local choices. Install the matching cache or choose an available model, then use **Retry startup** when Listen offers it.
+If first-time setup is interrupted, reconnect to the internet and choose **Try again** in the setup window. If Listen is already open, check the selected model under **Settings → Speech to text & AI cleanup**. Choose the default English model or an installed model, then use **Retry startup** when Listen offers it.
 
 ### Can I use Listen without Ollama or a paid API key?
 
@@ -98,18 +85,20 @@ Yes. With a supported local speech model ready, basic dictation works without Ol
 python tests/run_tests.py --no-devices
 ```
 
-The release source passed 75 device-free regression suites. They use disposable data and block real network calls, microphone access, physical input, and clipboard access. A separate Windows card harness is described in [the regression check guide](tests/README.md).
+The release source passed 75 automated suites that run without hardware. A fresh hosted Windows VM verified automatic model download, sample recognition, upgrade, and uninstall. A separate live microphone check verified that the shortcut started and stopped recording and that the sentence appeared once in the focused editor. [Windows VM run](https://github.com/Sczitzo/Listen/actions/runs/44825215006) · [Regression check guide](tests/README.md)
 
 ### Build the Windows installer from source
 
 On a Windows build machine with Git, Python 3.13 and the Windows .NET Framework C# compiler, run this from the repository root:
 
 ```powershell
-py -3.13 -B packaging/windows/build_installer.py --repo . --revision v2026.11.20 --output Listen-Windows-x64.msi
+py -3.13 -B packaging/windows/build_installer.py --repo . --revision v2026.11.21 --output Listen-Windows-x64.msi
 ```
 
-The build packages the tagged app files using Windows Installer and the Windows cabinet tool. It does not download models or copy any local app data.
+The build fetches pinned runtime packages and packages the tagged app files using Windows Installer. The speech model download happens on first launch. For source development on a configured machine, use [`run.bat`](run.bat) or [`launch_listen.pyw`](launch_listen.pyw). [Windows packaging details](packaging/windows/README.md)
 
 ## License
 
 Created by Sczitzo and released under the [MIT License](LICENSE).
+
+The Windows installer includes third-party libraries, including FFmpeg through PyAV. Their licenses, corresponding source files, and build instructions are available with the installer. [Third-party source bundle](https://github.com/Sczitzo/Listen/releases/latest/download/Listen-Third-Party-Source.zip)
